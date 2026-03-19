@@ -1,0 +1,45 @@
+version: 1
+app:
+  name: notes
+  display_name: Apple Notes
+  executor: applescript
+  description: Protected access to Apple Notes via AppleScript
+
+actions:
+  list_folders:
+    description: List all note folders
+    parameters: []
+    output:
+      mode: json
+      schema: folders
+    script: notes/list_folders.applescript
+
+  list_notes:
+    description: List notes in a folder
+    parameters:
+      - name: folder
+        type: string
+        required: true
+        policy_key: folder
+    output:
+      mode: json
+      schema: notes
+    script: notes/list_notes.applescript
+
+  read_note:
+    description: Read a note by title
+    parameters:
+      - name: folder
+        type: string
+        required: true
+        policy_key: folder
+      - name: note
+        type: string
+        required: true
+        policy_key: note
+    output:
+      mode: json
+      schema: note
+      raw_modes:
+        - body-only
+    script: notes/read_note.applescript

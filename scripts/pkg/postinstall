@@ -1,0 +1,107 @@
+#!/bin/bash
+# Copyright (c) EZBLOCK Inc & AUTHORS
+# SPDX-License-Identifier: BSD-3-Clause
+
+# postinstall — runs as root after AgentScope.app is copied to /Applications
+# Sets up per-user LaunchAgent and CLI symlink for the current console user.
+
+set -euo pipefail
+
+APP="/Applications/AgentScope.app"
+PLIST_NAME="com.ezblock.agentscope.ascoped.plist"
+PLIST_SRC="$APP/Contents/Resources/launchd/$PLIST_NAME"
+CLI_SRC="$APP/Contents/Resources/bin/ascope"
+CLI_LINK="/usr/local/bin/ascope"
+
+# ── Find the console user ────────────────────────────────────────────────────
+# PKG postinstall runs as root. We need the human user who is logged in.
+CONSOLE_USER=$( scutil <<< "show State:/Users/ConsoleUser" \
+  | awk '/Name :/ && !/loginwindow/ { print $3; exit }' )
+
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
+  echo "postinstall: no console user detected, skipping per-user setup" >&2
+  exit 0
+fi
+
+CONSOLE_UID=$(id -u "$CONSOLE_USER")
+USER_HOME=$(eval echo "~$CONSOLE_USER")
+LAUNCH_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
+PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_NAME"
+CONFIG_DIR="$USER_HOME/.agentscope"
+
+echo "postinstall: setting up AgentScope for user $CONSOLE_USER (uid $CONSOLE_UID)"
+
+# ── CLI symlink ──────────────────────────────────────────────────────────────
+mkdir -p /usr/local/bin
+if [ -L "$CLI_LINK" ] || [ -e "$CLI_LINK" ]; then
+  rm -f "$CLI_LINK"
+fi
+ln -s "$CLI_SRC" "$CLI_LINK"
+echo "postinstall: installed $CLI_LINK -> $CLI_SRC"
+
+# ── LaunchAgent ──────────────────────────────────────────────────────────────
+mkdir -p "$LAUNCH_AGENTS_DIR"
+chown "$CONSOLE_USER" "$LAUNCH_AGENTS_DIR"
+
+cp "$PLIST_SRC" "$PLIST_DST"
+chown "$CONSOLE_USER" "$PLIST_DST"
+echo "postinstall: installed LaunchAgent plist at $PLIST_DST"
+
+# Unload any previous version (ignore errors if not loaded)
+launchctl bootout "gui/$CONSOLE_UID/$( basename "$PLIST_NAME" .plist )" 2>/dev/null || true
+
+# Bootstrap and start the daemon
+launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST_DST"
+launchctl kickstart "gui/$CONSOLE_UID/$( basename "$PLIST_NAME" .plist )"
+echo "postinstall: LaunchAgent bootstrapped and started"
+
+# ── Seed default config (if first install) ──────────────────────────────────
+mkdir -p \
+  "$CONFIG_DIR" \
+  "$CONFIG_DIR/apps.d" \
+  "$CONFIG_DIR/state" \
+  "$CONFIG_DIR/run"
+chown -R "$CONSOLE_USER" "$CONFIG_DIR"
+
+AGENTS_FILE="$CONFIG_DIR/agents.yaml"
+if [ ! -f "$AGENTS_FILE" ]; then
+  cat > "$AGENTS_FILE" <<'EOF'
+version: 1
+agents:
+    - demo
+EOF
+  chown "$CONSOLE_USER" "$AGENTS_FILE"
+  echo "postinstall: created agents registry with demo agent at $AGENTS_FILE"
+fi
+
+POLICY_FILE="$CONFIG_DIR/policies.yaml"
+if [ ! -f "$POLICY_FILE" ]; then
+  cat > "$POLICY_FILE" <<'EOF'
+version: 1
+rules:
+    - effect: allow
+      agent: demo
+      app: notes
+      action: list_folders
+    - effect: allow
+      agent: demo
+      app: notes
+      action: list_notes
+    - effect: allow
+      agent: demo
+      app: notes
+      action: read_note
+EOF
+  chown "$CONSOLE_USER" "$POLICY_FILE"
+  echo "postinstall: created default policy (full Notes access for demo agent) at $POLICY_FILE"
+fi
+
+# ── Open the app to trigger the macOS Notes Automation permission prompt ─────
+# ascoped runs as a background LaunchAgent and cannot show TCC prompts.
+# Opening AgentScope.app puts it in the foreground so macOS can display
+# the "AgentScope wants to control Notes" approval dialog.
+launchctl asuser "$CONSOLE_UID" /usr/bin/open "$APP"
+echo "postinstall: opened AgentScope.app to trigger Notes permission prompt"
+
+echo "postinstall: done"
+exit 0
