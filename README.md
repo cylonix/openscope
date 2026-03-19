@@ -169,6 +169,17 @@ tccutil reset AppleEvents com.ezblock.agentscope && open /Applications/AgentScop
 
 See [`docs/pilot_guide.md`](docs/pilot_guide.md) for a full walkthrough.
 
+## OpenClaw Integration
+
+If you want to use AgentScope as the security boundary for an OpenClaw agent:
+
+- use the runtime instructions in [`docs/openclaw/SKILL.md`](docs/openclaw/SKILL.md)
+- use the setup guide in [`docs/openclaw_user_guide.md`](docs/openclaw_user_guide.md)
+
+For local setups, AgentScope agent names are best treated as policy and audit
+labels. For enterprise deployments, registration and policy should be centrally
+managed and distributed to devices rather than created ad hoc on each machine.
+
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE).
