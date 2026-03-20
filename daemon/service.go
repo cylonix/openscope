@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/agent"
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/audit"
@@ -93,6 +94,28 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: fmt.Sprintf("agent %q is not registered", request.Agent), ExitCode: ExitDenied}
 	}
 
+	actionContext := action.PolicyContext(request.Params)
+	protected, err := admin.LoadProtectedFoldersOrDefault(s.Paths)
+	if err != nil {
+		return ipc.Response{OK: false, Error: fmt.Sprintf("load protected folder blacklist: %v", err), ExitCode: ExitConfigError}
+	}
+	if entry.Definition.App.Name == "notes" {
+		if keyword, blocked := admin.MatchProtectedFolder(protected, actionContext["folder"]); blocked {
+			reason := fmt.Sprintf("folder is protected by admin blacklist keyword %q", keyword)
+			s.recordAudit(audit.Event{
+				Timestamp: time.Now().UTC(),
+				Agent:     request.Agent,
+				App:       entry.Definition.App.Name,
+				Action:    request.Action,
+				Params:    actionContext,
+				Decision:  "deny",
+				Result:    "admin_blacklist",
+				Reason:    reason,
+			})
+			return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: reason, ExitCode: ExitDenied}
+		}
+	}
+
 	pf, err := policy.LoadDefaultOrEmpty(s.Paths)
 	if err != nil {
 		return ipc.Response{OK: false, Error: fmt.Sprintf("load policy: %v", err), ExitCode: ExitConfigError}
@@ -105,7 +128,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 			Agent:     request.Agent,
 			App:       entry.Definition.App.Name,
 			Action:    request.Action,
-			Params:    action.PolicyContext(request.Params),
+			Params:    actionContext,
 			Decision:  "deny",
 			Result:    "denied",
 			Reason:    decision.Reason,
@@ -121,7 +144,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 			Agent:     request.Agent,
 			App:       entry.Definition.App.Name,
 			Action:    request.Action,
-			Params:    action.PolicyContext(request.Params),
+			Params:    actionContext,
 			Decision:  "allow",
 			Result:    "executor_error",
 			Reason:    err.Error(),
@@ -139,7 +162,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 			Agent:     request.Agent,
 			App:       entry.Definition.App.Name,
 			Action:    request.Action,
-			Params:    action.PolicyContext(request.Params),
+			Params:    actionContext,
 			Decision:  "allow",
 			Result:    "executor_failure",
 			Reason:    message,
@@ -152,7 +175,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		Agent:     request.Agent,
 		App:       entry.Definition.App.Name,
 		Action:    request.Action,
-		Params:    action.PolicyContext(request.Params),
+		Params:    actionContext,
 		Decision:  "allow",
 		Result:    "success",
 		Reason:    decision.Reason,

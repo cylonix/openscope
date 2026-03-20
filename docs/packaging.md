@@ -44,8 +44,12 @@ The PKG runs `scripts/pkg/preinstall` and `scripts/pkg/postinstall` as root:
 3. Installs `~/Library/LaunchAgents/com.ezblock.openscope.openscoped.plist`
 4. Starts `openscoped` via `launchctl bootstrap` + `kickstart`
 5. Creates `/usr/local/bin/openscope` symlink
-6. Seeds `~/.openscope/agents.yaml` with a `demo` agent and `policies.yaml` with
-   default Notes access (first install only; upgrade preserves existing config)
+6. Seeds `~/.openscope/agents.yaml` with an `openclaw` agent and `policies.yaml`
+   with default Notes list/read access when those files do not already exist;
+   existing user config is left untouched and can be reset intentionally with
+   `openscope init --force`
+7. Seeds `/Library/Application Support/OpenScope/protected_folders.yaml` with
+   `private` and `hidden`
 
 ## Pilot distribution checklist
 
@@ -54,7 +58,7 @@ The PKG runs `scripts/pkg/preinstall` and `scripts/pkg/postinstall` as root:
 - [ ] `scripts/build_pkg.sh --version X.Y.Z` exits cleanly
 - [ ] `sudo installer -pkg dist/OpenScope-X.Y.Z.pkg -target /` succeeds
 - [ ] `openscope status && openscope doctor` pass
-- [ ] `openscope notes list_folders --agent demo` returns folders from Apple Notes
+- [ ] `openscope notes list_notes --agent openclaw --folder Work` returns notes from Apple Notes
 
 ## Xcode project setup
 

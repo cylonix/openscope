@@ -90,15 +90,15 @@ You want `openscope status` to show that the daemon is running.
 
 ### Provision OpenClaw
 
-Once OpenScope is installed, register a dedicated low-permission label for OpenClaw:
+Once OpenScope is installed, the installer pre-registers `openclaw` as the
+default low-permission label for OpenClaw.
 
-Use one dedicated agent identity for OpenClaw:
+By default, that label can:
 
-```bash
-openscope agent register openclaw
-```
-
-Then grant only the permissions OpenClaw actually needs.
+- list notes inside a folder you name explicitly
+- read notes inside a folder you name explicitly
+- not enumerate all folders with `list_folders`
+- not access folders whose names contain protected keywords such as `private` or `hidden`
 
 The important practical rule is:
 
@@ -106,14 +106,13 @@ The important practical rule is:
 - do not create a broader-permission OpenClaw label unless you truly need it
 - do not reuse a manual or admin label for OpenClaw
 
-For example, if OpenClaw only needs your `Work` notes:
+If you want to customize access beyond the default:
 
 ```bash
-openscope policy allow --agent openclaw --app notes --action list_folders
-openscope policy allow --agent openclaw --app notes --action list_notes --folder Work
-openscope policy allow --agent openclaw --app notes --action read_note --folder Work
-openscope policy deny --agent openclaw --app notes --action list_notes --folder Private
-openscope policy deny --agent openclaw --app notes --action read_note --folder Private
+sudo openscope policy allow --agent openclaw --app notes --action list_notes --folder Work
+sudo openscope policy allow --agent openclaw --app notes --action read_note --folder Work
+openscope notes blacklist list
+sudo openscope notes blacklist add finance
 ```
 
 This is much better than giving the agent broad unrestricted access.
@@ -149,17 +148,16 @@ Approve it for OpenScope.
 OpenClaw should use commands like these:
 
 ```bash
-openscope notes list_folders --agent openclaw
 openscope notes list_notes --agent openclaw --folder "Work"
 openscope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" --body-only
 ```
 
 The best novice pattern is:
 
-1. Let OpenClaw discover folders
-2. Let it list notes only inside approved folders
-3. Let it read only the note it needs
-4. Prefer `--body-only` when OpenClaw only needs text
+1. Tell OpenClaw the folder name directly instead of giving it folder discovery.
+2. Let it list notes only inside that folder.
+3. Let it read only the note it needs.
+4. Prefer `--body-only` when OpenClaw only needs text.
 
 ## How To Think About Notes, Calendar, And Similar Apps
 
@@ -179,16 +177,16 @@ definition for that target, then give `openclaw` a scoped policy for that app.
 
 ### Safer
 
-- allow `list_folders`
+- do not allow `list_folders`
 - allow `list_notes` only for `Work`
 - allow `read_note` only for `Work`
-- explicitly deny `Private`
+- name sensitive folders with a protected keyword such as `Private` or `Hidden`
 - provision OpenClaw with only one low-permission label such as `openclaw`
 
 ### Riskier
 
 - allow all folders
-- reuse the `demo` agent for a production OpenClaw deployment
+- reuse a broad or legacy agent label for a production OpenClaw deployment
 - let OpenClaw use raw AppleScript outside OpenScope
 - create an `admin`-style label and also give OpenClaw access to it
 

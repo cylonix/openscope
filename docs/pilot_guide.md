@@ -26,7 +26,7 @@ required — the installer handles:
 - Copying `OpenScope.app` to `/Applications`
 - Registering and starting the `openscoped` background service
 - Installing `openscope` to `/usr/local/bin`
-- Creating `~/.openscope/` with a ready-to-use `demo` agent and default policy
+- Creating `~/.openscope/` with a ready-to-use `openclaw` agent and default policy
 
 After the installer completes, open a terminal and verify:
 
@@ -35,6 +35,13 @@ openscope status
 ```
 
 You should see `"running": true` in the output.
+
+If you have an older local config from previous pilot builds and want to reset it
+to the current app defaults, run:
+
+```bash
+openscope init --force
+```
 
 ### Granting macOS Automation Permission
 
@@ -47,21 +54,19 @@ Accept it. You can also pre-grant via:
 
 ## Quick Start
 
-The installer creates a `demo` agent with full access to Apple Notes. Run these
+The installer creates an `openclaw` agent with default note list/read access but
+without `list_folders`. Run these
 immediately after install to confirm everything works:
 
 ```bash
-# List all Note folders
-openscope notes list_folders --agent demo
-
 # List notes in a folder (replace "Work" with a real folder name from your Notes)
-openscope notes list_notes --agent demo --folder Work
+openscope notes list_notes --agent openclaw --folder Work
 
 # Read a note
-openscope notes read_note --agent demo --folder Work --note "My Note"
+openscope notes read_note --agent openclaw --folder Work --note "My Note"
 
 # Read just the body (plain text)
-openscope notes read_note --agent demo --folder Work --note "My Note" --body-only
+openscope notes read_note --agent openclaw --folder Work --note "My Note" --body-only
 ```
 
 ---
@@ -80,7 +85,7 @@ List all registered agents:
 openscope agent list
 ```
 
-The `demo` agent is pre-registered by the installer.
+The `openclaw` agent is pre-registered by the installer.
 
 ---
 
@@ -92,20 +97,17 @@ Rules are evaluated in order: `deny` overrides `allow`; no matching `allow` = de
 ### Adding allow rules
 
 ```bash
-# Allow an agent to list all folders
-openscope policy allow --agent my-agent --app notes --action list_folders
-
 # Allow access to a specific folder only
-openscope policy allow --agent my-agent --app notes --action list_notes --folder Work
-openscope policy allow --agent my-agent --app notes --action read_note  --folder Work
+sudo openscope policy allow --agent my-agent --app notes --action list_notes --folder Work
+sudo openscope policy allow --agent my-agent --app notes --action read_note  --folder Work
 ```
 
 ### Adding deny rules
 
 ```bash
 # Block access to a specific folder (overrides any allow)
-openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
-openscope policy deny --agent my-agent --app notes --action read_note  --folder Private
+sudo openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
+sudo openscope policy deny --agent my-agent --app notes --action read_note  --folder Private
 ```
 
 ### Viewing policy
@@ -115,7 +117,7 @@ openscope policy deny --agent my-agent --app notes --action read_note  --folder 
 openscope policy list
 
 # Show rules for one agent
-openscope policy show --agent demo
+openscope policy show --agent openclaw
 ```
 
 ### Validating policy
@@ -128,27 +130,26 @@ openscope policy validate
 
 1. Create a folder called **Private** in Apple Notes and add a note to it.
 
-2. Confirm the `demo` agent can currently list it:
+2. Confirm the `openclaw` agent is denied because the folder name matches the
+   protected blacklist:
 
 ```bash
-openscope notes list_notes --agent demo --folder Private
+openscope notes list_notes --agent openclaw --folder Private
 ```
 
-3. Add a deny rule:
+3. Review the blacklist:
 
 ```bash
-openscope policy deny --agent demo --app notes --action list_notes --folder Private
-openscope policy deny --agent demo --app notes --action read_note  --folder Private
+openscope notes blacklist list
 ```
 
-4. Try again — the request should now be denied:
+4. Add another protected keyword if needed:
 
 ```bash
-openscope notes list_notes --agent demo --folder Private
-# expected: {"ok": false, ...}
+sudo openscope notes blacklist add secret
 ```
 
-5. Confirm the audit log captured both the allow and deny decisions:
+5. Confirm the audit log captured the deny decision:
 
 ```bash
 tail -5 ~/.openscope/audit.jsonl
@@ -157,19 +158,6 @@ tail -5 ~/.openscope/audit.jsonl
 ---
 
 ## Apple Notes Actions Reference
-
-### `list_folders`
-
-List all note folders.
-
-```bash
-openscope notes list_folders --agent <agent-id>
-```
-
-```json
-{"ok": true, "app": "notes", "action": "list_folders", "agent": "demo",
- "data": {"folders": ["Work", "Personal", "Private"]}}
-```
 
 ### `list_notes`
 
@@ -251,7 +239,7 @@ launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped
 
 ```bash
 # Check what rules apply to your agent
-openscope policy show --agent demo
+openscope policy show --agent openclaw
 
 # Check the audit log for the deny reason
 tail -5 ~/.openscope/audit.jsonl

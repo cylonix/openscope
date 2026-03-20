@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/agent"
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/config"
@@ -37,7 +38,13 @@ func Run(args []string) int {
 		return daemon.ExitInvalid
 	}
 
+	if args[0] == "notes" && len(args) > 1 && args[1] == "blacklist" {
+		return runNotesBlacklist(paths, args[2:])
+	}
+
 	switch args[0] {
+	case "init":
+		return runInit(paths, args[1:])
 	case "app":
 		return runApp(paths, args[1:])
 	case "policy":
@@ -135,6 +142,55 @@ func runApp(paths config.Paths, args []string) int {
 	}
 }
 
+func runInit(paths config.Paths, args []string) int {
+	force := false
+	if len(args) > 0 {
+		if len(args) == 1 && args[0] == "--force" {
+			force = true
+		} else {
+			output.WriteErrorf("usage: openscope init [--force]")
+			return daemon.ExitInvalid
+		}
+	}
+
+	if !force {
+		if fileExists(paths.AgentsFile) || fileExists(paths.PoliciesFile) {
+			output.WriteErrorf("config already exists; re-run with --force to overwrite agents.yaml and policies.yaml")
+			return daemon.ExitDenied
+		}
+	}
+
+	registry := agent.Registry{
+		Version: 1,
+		Agents:  []string{"openclaw"},
+	}
+	if err := agent.Save(paths.AgentsFile, registry); err != nil {
+		output.WriteErrorf("write default agents: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	pf := policy.File{
+		Version: 1,
+		Rules: []policy.Rule{
+			{Effect: "allow", Agent: "openclaw", App: "notes", Action: "list_notes"},
+			{Effect: "allow", Agent: "openclaw", App: "notes", Action: "read_note"},
+		},
+	}
+	if err := policy.SaveDefault(paths, pf); err != nil {
+		output.WriteErrorf("write default policy: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	return writeJSON(map[string]any{
+		"ok":          true,
+		"initialized": true,
+		"force":       force,
+		"agents_file": paths.AgentsFile,
+		"policy_file": paths.PoliciesFile,
+		"agents":      registry.Agents,
+	})
+}
+
 func runPolicy(paths config.Paths, args []string) int {
 	if len(args) == 0 {
 		output.WriteErrorf("usage: openscope policy <list|show|validate|allow|deny>")
@@ -182,6 +238,11 @@ func runPolicy(paths config.Paths, args []string) int {
 }
 
 func runPolicyAddRule(paths config.Paths, effect string, args []string) int {
+	if err := requireRootForMutation("policy changes"); err != nil {
+		output.WriteErrorf("%v", err)
+		return daemon.ExitDenied
+	}
+
 	flags, err := parseFlags(args)
 	if err != nil {
 		output.WriteErrorf("parse flags: %v", err)
@@ -225,6 +286,76 @@ func runPolicyAddRule(paths config.Paths, effect string, args []string) int {
 		"added": added,
 		"rule":  rule,
 	})
+}
+
+func runNotesBlacklist(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope notes blacklist <list|add|remove> [keyword]")
+		return daemon.ExitInvalid
+	}
+
+	switch args[0] {
+	case "list":
+		protected, err := admin.LoadProtectedFoldersOrDefault(paths)
+		if err != nil {
+			output.WriteErrorf("load protected folder blacklist: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"keywords": protected.Keywords,
+			"source":   paths.ProtectedFoldersFile,
+		})
+	case "add":
+		if err := requireRootForMutation("protected folder blacklist changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope notes blacklist add <keyword>")
+			return daemon.ExitInvalid
+		}
+		protected, added, err := admin.AddProtectedFolderKeyword(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add protected folder keyword: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":       true,
+			"added":    added,
+			"keywords": protected.Keywords,
+			"source":   paths.ProtectedFoldersFile,
+		})
+	case "remove":
+		if err := requireRootForMutation("protected folder blacklist changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope notes blacklist remove <keyword>")
+			return daemon.ExitInvalid
+		}
+		protected, removed, err := admin.RemoveProtectedFolderKeyword(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove protected folder keyword: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":       true,
+			"removed":  removed,
+			"keywords": protected.Keywords,
+			"source":   paths.ProtectedFoldersFile,
+		})
+	default:
+		output.WriteErrorf("unknown notes blacklist command %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
+func requireRootForMutation(scope string) error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("%s require sudo so local agents cannot silently widen access", scope)
+	}
+	return nil
 }
 
 func runAgent(paths config.Paths, args []string) int {
@@ -472,9 +603,15 @@ func writeJSON(v any) int {
 
 func printUsage() {
 	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope init [--force]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope status")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope doctor")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

@@ -6,43 +6,64 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 )
 
 const DirName = ".openscope"
+const AdminDir = "/Library/Application Support/OpenScope"
 
 type Paths struct {
-	HomeDir         string
-	ConfigDir       string
-	AppsDir         string
-	RunDir          string
-	StateDir        string
-	PoliciesFile    string
-	AgentsFile      string
-	AuditFile       string
-	EnabledAppsFile string
-	SocketPath      string
+	HomeDir              string
+	ConfigDir            string
+	AppsDir              string
+	RunDir               string
+	StateDir             string
+	PoliciesFile         string
+	AgentsFile           string
+	AuditFile            string
+	EnabledAppsFile      string
+	SocketPath           string
+	AdminDir             string
+	ProtectedFoldersFile string
 }
 
 func DefaultPaths() (Paths, error) {
-	home, err := os.UserHomeDir()
+	home, err := resolveConfigHomeDir()
 	if err != nil {
 		return Paths{}, fmt.Errorf("locate home directory: %w", err)
 	}
 
 	configDir := filepath.Join(home, DirName)
 	return Paths{
-		HomeDir:         home,
-		ConfigDir:       configDir,
-		AppsDir:         filepath.Join(configDir, "apps.d"),
-		RunDir:          filepath.Join(configDir, "run"),
-		StateDir:        filepath.Join(configDir, "state"),
-		PoliciesFile:    filepath.Join(configDir, "policies.yaml"),
-		AgentsFile:      filepath.Join(configDir, "agents.yaml"),
-		AuditFile:       filepath.Join(configDir, "audit.jsonl"),
-		EnabledAppsFile: filepath.Join(configDir, "state", "enabled_apps.yaml"),
-		SocketPath:      filepath.Join(configDir, "run", "openscoped.sock"),
+		HomeDir:              home,
+		ConfigDir:            configDir,
+		AppsDir:              filepath.Join(configDir, "apps.d"),
+		RunDir:               filepath.Join(configDir, "run"),
+		StateDir:             filepath.Join(configDir, "state"),
+		PoliciesFile:         filepath.Join(configDir, "policies.yaml"),
+		AgentsFile:           filepath.Join(configDir, "agents.yaml"),
+		AuditFile:            filepath.Join(configDir, "audit.jsonl"),
+		EnabledAppsFile:      filepath.Join(configDir, "state", "enabled_apps.yaml"),
+		SocketPath:           filepath.Join(configDir, "run", "openscoped.sock"),
+		AdminDir:             AdminDir,
+		ProtectedFoldersFile: filepath.Join(AdminDir, "protected_folders.yaml"),
 	}, nil
+}
+
+func resolveConfigHomeDir() (string, error) {
+	if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			account, err := user.Lookup(sudoUser)
+			if err != nil {
+				return "", fmt.Errorf("lookup sudo user %q: %w", sudoUser, err)
+			}
+			if account.HomeDir != "" {
+				return account.HomeDir, nil
+			}
+		}
+	}
+	return os.UserHomeDir()
 }
 
 func EnsureLayout(paths Paths) error {

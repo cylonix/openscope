@@ -44,23 +44,21 @@ scripts/build_pkg.sh --version 0.1.0   # produces dist/OpenScope-0.1.0.pkg
 
 ## Quick Start
 
-After installing the `.pkg`, a `demo` agent is pre-registered with default Notes access:
+After installing the `.pkg`, an `openclaw` agent is pre-registered with default
+Notes access:
 
 ```bash
 # Verify the daemon is running
 openscope status
 
-# List Note folders
-openscope notes list_folders --agent demo
-
 # List notes in a folder
-openscope notes list_notes --agent demo --folder Work
+openscope notes list_notes --agent openclaw --folder Work
 
 # Read a note
-openscope notes read_note --agent demo --folder Work --note "My Note"
+openscope notes read_note --agent openclaw --folder Work --note "My Note"
 
 # Read just the body (plain text, suitable for piping)
-openscope notes read_note --agent demo --folder Work --note "My Note" --body-only
+openscope notes read_note --agent openclaw --folder Work --note "My Note" --body-only
 ```
 
 ## Commands
@@ -68,6 +66,9 @@ openscope notes read_note --agent demo --folder Work --note "My Note" --body-onl
 ```bash
 # Protected app actions
 openscope <app> <action> --agent <agent-id> [flags]
+
+# Reset user config to the current app defaults
+openscope init --force
 
 # App management
 openscope app list
@@ -80,12 +81,17 @@ openscope app validate [--file <path>]
 openscope policy list
 openscope policy show --agent <agent-id>
 openscope policy validate
-openscope policy allow --agent <id> --app <app> --action <action> [--<param> <value> ...]
-openscope policy deny  --agent <id> --app <app> --action <action> [--<param> <value> ...]
+sudo openscope policy allow --agent <id> --app <app> --action <action> [--<param> <value> ...]
+sudo openscope policy deny  --agent <id> --app <app> --action <action> [--<param> <value> ...]
 
 # Agent registry
 openscope agent register <agent-id>
 openscope agent list
+
+# Protected Notes folder blacklist
+openscope notes blacklist list
+sudo openscope notes blacklist add private
+sudo openscope notes blacklist remove hidden
 
 # Diagnostics
 openscope status
@@ -98,19 +104,24 @@ Rules control which agent may call which action, with optional parameter constra
 `deny` overrides `allow`; no matching `allow` defaults to deny.
 
 ```bash
-# Allow an agent to list all Note folders
-openscope policy allow --agent my-agent --app notes --action list_folders
-
 # Allow access to a specific folder only
-openscope policy allow --agent my-agent --app notes --action list_notes --folder Work
-openscope policy allow --agent my-agent --app notes --action read_note  --folder Work
+sudo openscope policy allow --agent my-agent --app notes --action list_notes --folder Work
+sudo openscope policy allow --agent my-agent --app notes --action read_note  --folder Work
 
 # Block a folder (overrides any allow)
-openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
+sudo openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
 ```
 
 Policy is stored in `~/.openscope/policies.yaml`. Every allow and deny decision is
 appended to `~/.openscope/audit.jsonl`.
+
+OpenScope also enforces a root-owned protected-folder blacklist in
+`/Library/Application Support/OpenScope/protected_folders.yaml`. By default,
+folders whose names contain `private` or `hidden` are denied even if the user
+policy would otherwise allow them.
+
+If you want to reset your user-owned OpenScope YAML files to the current app
+defaults, run `openscope init --force`.
 
 ## Configuration Layout
 
@@ -179,6 +190,10 @@ If you want to use OpenScope as the security boundary for an OpenClaw agent:
 For local setups, OpenScope agent names are best treated as policy and audit
 labels. For enterprise deployments, registration and policy should be centrally
 managed and distributed to devices rather than created ad hoc on each machine.
+
+For Notes, a practical default is to name sensitive folders with `Private` or
+`Hidden`, or add more protected keywords with
+`sudo openscope notes blacklist add <keyword>`.
 
 ## License
 

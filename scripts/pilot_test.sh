@@ -11,7 +11,7 @@
 # Options:
 #   --folder <name>   Notes folder to use for list_notes / read_note tests
 #   --note <title>    Note title to use for read_note test
-#   --agent <name>    Agent name to use (default: demo)
+#   --agent <name>    Agent name to use (default: openclaw)
 
 set -euo pipefail
 
@@ -31,7 +31,7 @@ record() { REPORT+=("$1|$2|$3")
 }
 
 # ── option parsing ─────────────────────────────────────────────────────────────
-AGENT="demo"; TEST_FOLDER=""; TEST_NOTE=""
+AGENT="openclaw"; TEST_FOLDER=""; TEST_NOTE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --folder) TEST_FOLDER="$2"; shift 2 ;;
@@ -70,6 +70,14 @@ run_test() {  # name expect_exit cmd [args...]
   local name="$1" expect_exit="$2"; shift 2
   local ec=0; TEST_OUTPUT=$("$@" 2>&1) || ec=$?
   { [ "$expect_exit" -eq 0 ] && [ "$ec" -eq 0 ]; } || { [ "$expect_exit" -ne 0 ] && [ "$ec" -ne 0 ]; }
+}
+
+contains_deny_reason() {
+  echo "$1" | grep -qiE "denied|no matching allow|unregistered|not registered|protected|blacklist"
+}
+
+contains_transport_failure() {
+  echo "$1" | grep -qiE "daemon unavailable|not responding|connect to daemon|operation not permitted"
 }
 
 # ── header ─────────────────────────────────────────────────────────────────────
@@ -189,26 +197,55 @@ printf '\n'
 printf "${BOLD}3. Configuration${RESET}\n"
 
 CONFIG="$HOME/.openscope"
+PROTECTED_FOLDERS_FILE="/Library/Application Support/OpenScope/protected_folders.yaml"
 
-# 3.1 Demo agent registered
+# 3.1 openclaw agent registered
 AGENTS_FILE="$CONFIG/agents.yaml"
-if [ -f "$AGENTS_FILE" ] && grep -q "\bdemo\b" "$AGENTS_FILE"; then
-  record PASS "Demo agent registered" "found in agents.yaml"
-  print_status PASS "Demo agent registered" "found in agents.yaml"
+if [ -f "$AGENTS_FILE" ] && grep -q "\bopenclaw\b" "$AGENTS_FILE"; then
+  record PASS "openclaw agent registered" "found in agents.yaml"
+  print_status PASS "openclaw agent registered" "found in agents.yaml"
   show_evidence "$(cat "$AGENTS_FILE")"
 else
-  record FAIL "Demo agent registered" "demo not in $AGENTS_FILE"
-  print_status FAIL "Demo agent registered" "missing"
+  record FAIL "openclaw agent registered" "openclaw not in $AGENTS_FILE"
+  print_status FAIL "openclaw agent registered" "missing"
   [ -f "$AGENTS_FILE" ] && show_evidence "$(cat "$AGENTS_FILE")"
 fi
 
 # 3.2 Default Notes policies
 POLICY_FILE="$CONFIG/policies.yaml"
 if [ -f "$POLICY_FILE" ]; then
-  RULE_COUNT=$(grep -c "effect: allow" "$POLICY_FILE" 2>/dev/null || echo 0)
-  if [ "$RULE_COUNT" -ge 3 ]; then
-    record PASS "Default policies" "$RULE_COUNT allow rules"
-    print_status PASS "Default policies" "$RULE_COUNT allow rules"
+  OPENCLAW_ALLOW_COUNT=$(awk '
+    BEGIN { count = 0; has_list_folders = "false"; in_rule = 0; effect = ""; agent = ""; action = "" }
+    /^[[:space:]]*-[[:space:]]effect:/ {
+      if (in_rule && agent == "openclaw" && effect == "allow") {
+        count++
+        if (action == "list_folders") {
+          has_list_folders = "true"
+        }
+      }
+      in_rule = 1
+      effect = $NF
+      agent = ""
+      action = ""
+      next
+    }
+    in_rule && /^[[:space:]]*agent:/ { agent = $NF; next }
+    in_rule && /^[[:space:]]*action:/ { action = $NF; next }
+    END {
+      if (in_rule && agent == "openclaw" && effect == "allow") {
+        count++
+        if (action == "list_folders") {
+          has_list_folders = "true"
+        }
+      }
+      printf "%d|%s\n", count, has_list_folders
+    }
+  ' "$POLICY_FILE" 2>/dev/null || echo "0|unknown")
+  RULE_COUNT="${OPENCLAW_ALLOW_COUNT%%|*}"
+  HAS_LIST_FOLDERS="${OPENCLAW_ALLOW_COUNT##*|}"
+  if [ "$RULE_COUNT" -ge 2 ] && [ "$HAS_LIST_FOLDERS" = "false" ]; then
+    record PASS "Default policies" "$RULE_COUNT openclaw allow rules; list_folders not allowed"
+    print_status PASS "Default policies" "$RULE_COUNT openclaw allow rules"
     # Show the allow rules in a compact format
     RULES_SUMMARY=$(python3 -c "
 import re, sys
@@ -231,8 +268,8 @@ for b in blocks:
 " 2>/dev/null || grep "effect:\|action:\|agent:" "$POLICY_FILE")
     show_evidence "$RULES_SUMMARY"
   else
-    record FAIL "Default policies" "only $RULE_COUNT allow rules, expected ≥3"
-    print_status FAIL "Default policies" "only $RULE_COUNT allow rules"
+    record FAIL "Default policies" "want openclaw list/read only; got allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS"
+    print_status FAIL "Default policies" "allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS"
     show_evidence "$(cat "$POLICY_FILE")"
   fi
 else
@@ -240,7 +277,23 @@ else
   print_status FAIL "Default policies" "file missing"
 fi
 
-# 3.3 Notes Automation permission (TCC)
+# 3.3 Admin protected folders file
+if [ -f "$PROTECTED_FOLDERS_FILE" ]; then
+  if grep -Eq 'private|hidden' "$PROTECTED_FOLDERS_FILE"; then
+    record PASS "Protected folder blacklist" "$PROTECTED_FOLDERS_FILE"
+    print_status PASS "Protected folder blacklist" "installed"
+    show_evidence "$(cat "$PROTECTED_FOLDERS_FILE")"
+  else
+    record FAIL "Protected folder blacklist" "missing private/hidden defaults"
+    print_status FAIL "Protected folder blacklist" "missing private/hidden defaults"
+    show_evidence "$(cat "$PROTECTED_FOLDERS_FILE")"
+  fi
+else
+  record FAIL "Protected folder blacklist" "$PROTECTED_FOLDERS_FILE not found"
+  print_status FAIL "Protected folder blacklist" "file missing"
+fi
+
+# 3.4 Notes Automation permission (TCC)
 AE_RAW=$(osascript -e 'tell application "Notes" to return' 2>&1; echo "EXIT:$?")
 AE_EXIT=$(echo "$AE_RAW" | grep "EXIT:" | cut -d: -f2)
 if [ "$AE_EXIT" = "0" ]; then
@@ -262,21 +315,41 @@ printf '\n'
 # ══════════════════════════════════════════════════════════════════════════════
 printf "${BOLD}4. Notes Actions  (agent: $AGENT)${RESET}\n"
 
-# 4.1 list_folders
-if run_test "list_folders" 0 openscope notes list_folders --agent "$AGENT"; then
-  FOLDERS=$(json_extract "$TEST_OUTPUT" "print('\n'.join(d.get('data',[])))")
-  FOLDER_COUNT=$(echo "$FOLDERS" | grep -c . 2>/dev/null || echo 0)
-  record PASS "notes list_folders" "$FOLDER_COUNT folder(s)"
-  print_status PASS "notes list_folders" "$FOLDER_COUNT folder(s)"
-  show_evidence "$FOLDERS"
-  if [ -z "$TEST_FOLDER" ]; then
-    TEST_FOLDER=$(json_extract "$TEST_OUTPUT" "f=d.get('data',[]); print(f[0]) if f else print('')")
+# 4.1 list_folders is intentionally denied for openclaw
+if run_test "list_folders denied" 1 openscope notes list_folders --agent "$AGENT"; then
+  if contains_deny_reason "$TEST_OUTPUT" && ! contains_transport_failure "$TEST_OUTPUT"; then
+    record PASS "notes list_folders denied" "default agent cannot enumerate folders"
+    print_status PASS "notes list_folders denied" "expected deny"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record FAIL "notes list_folders denied" "failed for the wrong reason"
+    print_status FAIL "notes list_folders denied" "failed for the wrong reason"
+    show_evidence "$TEST_OUTPUT"
   fi
 else
-  record FAIL "notes list_folders" "$(echo "$TEST_OUTPUT" | head -1)"
-  print_status FAIL "notes list_folders" "$(echo "$TEST_OUTPUT" | head -1)"
+  record FAIL "notes list_folders denied" "request unexpectedly succeeded"
+  print_status FAIL "notes list_folders denied" "request unexpectedly succeeded"
   show_evidence "$TEST_OUTPUT"
-  TEST_FOLDER=""
+fi
+
+if [ -z "$TEST_FOLDER" ]; then
+  TEST_FOLDER=$(osascript <<'EOF' 2>/dev/null || true
+tell application "Notes"
+	set folderNames to {}
+	repeat with acc in every account
+		repeat with f in every folder of acc
+			set end of folderNames to (name of f as text)
+		end repeat
+	end repeat
+end tell
+repeat with folderName in folderNames
+	set lowerName to do shell script "printf %s " & quoted form of (folderName as text) & " | tr '[:upper:]' '[:lower:]'"
+	if lowerName does not contain "private" and lowerName does not contain "hidden" then
+		return folderName as text
+	end if
+end repeat
+EOF
+)
 fi
 
 # 4.2 list_notes
@@ -343,11 +416,16 @@ printf "${BOLD}5. Policy Enforcement${RESET}\n"
 # 5.1 Unregistered agent rejected
 RANDOM_AGENT="pilot_test_agent_$$"
 if run_test "Unregistered agent rejected" 1 openscope notes list_folders --agent "$RANDOM_AGENT"; then
-  # CLI returns plain text for these errors, not JSON
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
-  record PASS "Unregistered agent rejected" "$ERR_MSG"
-  print_status PASS "Unregistered agent rejected" "$ERR_MSG"
-  show_evidence "exit non-zero; output: $TEST_OUTPUT"
+  if echo "$TEST_OUTPUT" | grep -qiE "unregistered|not registered"; then
+    record PASS "Unregistered agent rejected" "$ERR_MSG"
+    print_status PASS "Unregistered agent rejected" "$ERR_MSG"
+    show_evidence "exit non-zero; output: $TEST_OUTPUT"
+  else
+    record FAIL "Unregistered agent rejected" "failed for the wrong reason"
+    print_status FAIL "Unregistered agent rejected" "failed for the wrong reason"
+    show_evidence "$TEST_OUTPUT"
+  fi
 else
   record FAIL "Unregistered agent rejected" "was not rejected"
   print_status FAIL "Unregistered agent rejected" "was not rejected"
@@ -357,39 +435,78 @@ fi
 # 5.2 Unknown app rejected
 if run_test "Unknown app rejected" 1 openscope nonexistentapp someaction --agent "$AGENT"; then
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
-  record PASS "Unknown app rejected" "$ERR_MSG"
-  print_status PASS "Unknown app rejected" "$ERR_MSG"
-  show_evidence "exit non-zero; output: $TEST_OUTPUT"
+  if echo "$TEST_OUTPUT" | grep -qiE "not found|unknown action|unknown app"; then
+    record PASS "Unknown app rejected" "$ERR_MSG"
+    print_status PASS "Unknown app rejected" "$ERR_MSG"
+    show_evidence "exit non-zero; output: $TEST_OUTPUT"
+  else
+    record FAIL "Unknown app rejected" "failed for the wrong reason"
+    print_status FAIL "Unknown app rejected" "failed for the wrong reason"
+    show_evidence "$TEST_OUTPUT"
+  fi
 else
   record FAIL "Unknown app rejected" "was not rejected"
   print_status FAIL "Unknown app rejected" "was not rejected"
   show_evidence "$TEST_OUTPUT"
 fi
 
-# 5.3 Policy deny: backup → add deny → test → restore
-DENY_TEST_FOLDER="__pilot_deny_test_$$__"
-POLICY_BACKUP=$(mktemp)
-cp "$HOME/.openscope/policies.yaml" "$POLICY_BACKUP"
+# 5.3 Admin blacklist overrides broader user policy
+BLACKLIST_TEST_FOLDER=$(osascript <<'EOF' 2>/dev/null || true
+tell application "Notes"
+	set folderNames to {}
+	repeat with acc in every account
+		repeat with f in every folder of acc
+			set end of folderNames to (name of f as text)
+		end repeat
+	end repeat
+end tell
+repeat with folderName in folderNames
+	set lowerName to do shell script "printf %s " & quoted form of (folderName as text) & " | tr '[:upper:]' '[:lower:]'"
+	if lowerName contains "private" or lowerName contains "hidden" then
+		return folderName as text
+	end if
+end repeat
+EOF
+)
+if [ -n "$BLACKLIST_TEST_FOLDER" ]; then
+  POLICY_BACKUP=$(mktemp)
+  cp "$HOME/.openscope/policies.yaml" "$POLICY_BACKUP"
+  cat >> "$HOME/.openscope/policies.yaml" <<EOF
+  - effect: allow
+    agent: $AGENT
+    app: notes
+    action: list_notes
+    constraints:
+      folder: $BLACKLIST_TEST_FOLDER
+  - effect: allow
+    agent: $AGENT
+    app: notes
+    action: read_note
+    constraints:
+      folder: $BLACKLIST_TEST_FOLDER
+EOF
 
-openscope policy deny --agent "$AGENT" --app notes --action list_notes \
-  --folder "$DENY_TEST_FOLDER" >/dev/null 2>&1 || true
+  DENY_OUTPUT=""
+  DENY_EC=0
+  DENY_OUTPUT=$(openscope notes list_notes --agent "$AGENT" --folder "$BLACKLIST_TEST_FOLDER" 2>&1) || DENY_EC=$?
 
-DENY_OUTPUT=""
-DENY_EC=0
-DENY_OUTPUT=$(openscope notes list_notes --agent "$AGENT" --folder "$DENY_TEST_FOLDER" 2>&1) || DENY_EC=$?
+  mv "$POLICY_BACKUP" "$HOME/.openscope/policies.yaml"
 
-mv "$POLICY_BACKUP" "$HOME/.openscope/policies.yaml"
-
-if [ "$DENY_EC" -ne 0 ]; then
-  DENY_MSG=$(json_extract "$DENY_OUTPUT" "print(d.get('error',d))" 2>/dev/null || echo "$DENY_OUTPUT")
-  record PASS "Policy deny blocks action" "folder constraint enforced"
-  print_status PASS "Policy deny blocks action" "folder constraint enforced"
-  show_evidence "rule: deny $AGENT → notes.list_notes [folder=$DENY_TEST_FOLDER]
-response: $DENY_OUTPUT"
+  if [ "$DENY_EC" -ne 0 ] && echo "$DENY_OUTPUT" | grep -qi "protected\|blacklist\|deny"; then
+    record PASS "Admin blacklist overrides user allow" "protected folder still denied"
+    print_status PASS "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
+    show_evidence "user policy temporarily allowed:
+  $AGENT -> notes.list_notes [folder=$BLACKLIST_TEST_FOLDER]
+response:
+$DENY_OUTPUT"
+  else
+    record FAIL "Admin blacklist overrides user allow" "protected folder was not denied"
+    print_status FAIL "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
+    show_evidence "$DENY_OUTPUT"
+  fi
 else
-  record FAIL "Policy deny blocks action" "deny had no effect"
-  print_status FAIL "Policy deny blocks action" "deny had no effect"
-  show_evidence "$DENY_OUTPUT"
+  record SKIP "Admin blacklist overrides user allow" "no Notes folder with private/hidden in its name"
+  print_status SKIP "Admin blacklist overrides user allow" "no protected folder found"
 fi
 
 printf '\n'

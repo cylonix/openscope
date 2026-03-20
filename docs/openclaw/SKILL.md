@@ -34,12 +34,6 @@ or for user-defined apps that the user has installed and enabled.
 
 ## Core Commands
 
-List note folders:
-
-```bash
-openscope notes list_folders --agent openclaw
-```
-
 List notes in one folder:
 
 ```bash
@@ -60,10 +54,10 @@ openscope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" 
 
 ## Safe Workflow
 
-1. Start by discovering folders with `list_folders`.
-2. Narrow to a specific folder with `list_notes`.
+1. Ask the user which folder to use, or use a folder name already present in context.
+2. Narrow to that specific folder with `list_notes`.
 3. Read only the note you need.
-4. If access is denied, report that policy blocked the request.
+4. If access is denied, report that policy or the protected-folder blacklist blocked the request.
 5. If the broker appears unavailable, check `openscope status` and `openscope doctor`.
 
 ## Failure Handling
