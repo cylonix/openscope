@@ -3,19 +3,19 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.ezblock.agentscope.ascoped</string>
+	<string>com.ezblock.openscope.openscoped</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Applications/AgentScope.app/Contents/Resources/bin/ascoped</string>
+		<string>/Applications/OpenScope.app/Contents/Resources/bin/openscoped</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/tmp/com.ezblock.agentscope.ascoped.stdout.log</string>
+	<string>/tmp/com.ezblock.openscope.openscoped.stdout.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/com.ezblock.agentscope.ascoped.stderr.log</string>
+	<string>/tmp/com.ezblock.openscope.openscoped.stderr.log</string>
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>EnvironmentVariables</key>

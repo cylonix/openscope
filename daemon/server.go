@@ -10,8 +10,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/agentscope/ascope/config"
-	"github.com/agentscope/ascope/ipc"
+	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/ipc"
 )
 
 func ListenAndServe(paths config.Paths, service Service) error {

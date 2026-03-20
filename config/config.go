@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const DirName = ".agentscope"
+const DirName = ".openscope"
 
 type Paths struct {
 	HomeDir         string
@@ -41,7 +41,7 @@ func DefaultPaths() (Paths, error) {
 		AgentsFile:      filepath.Join(configDir, "agents.yaml"),
 		AuditFile:       filepath.Join(configDir, "audit.jsonl"),
 		EnabledAppsFile: filepath.Join(configDir, "state", "enabled_apps.yaml"),
-		SocketPath:      filepath.Join(configDir, "run", "ascoped.sock"),
+		SocketPath:      filepath.Join(configDir, "run", "openscoped.sock"),
 	}, nil
 }
 

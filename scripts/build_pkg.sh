@@ -2,18 +2,18 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# build_pkg.sh — Build AgentScope.pkg from an exported, notarized app bundle.
+# build_pkg.sh — Build OpenScope.pkg from an exported, notarized app bundle.
 #
 # Step 1 (Xcode): Product → Archive → Distribute App → Developer ID
-#                 Export the notarized AgentScope.app to dist/export/
+#                 Export the notarized OpenScope.app to dist/export/
 #
 # Step 2 (this script):
 #   scripts/build_pkg.sh --version 0.1.0
 #
 # Options:
 #   --version VER    Package version (required)
-#   --app PATH       Path to AgentScope.app
-#                    Default: dist/export/AgentScope.app
+#   --app PATH       Path to OpenScope.app
+#                    Default: dist/export/OpenScope.app
 #   --output DIR     Output directory (default: dist/)
 #   -h, --help       Show this message
 
@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Load local developer config (.env.local is gitignored; copy from .env.local.example)
 [ -f "$REPO_ROOT/.env.local" ] && set -a && . "$REPO_ROOT/.env.local" && set +a
 
-BUNDLE_ID="com.ezblock.agentscope"
+BUNDLE_ID="com.ezblock.openscope"
 # AGENTSCOPE_TEAM_ID filters signing identity lookup to your Apple Developer Team.
 # Set it in .env.local or as an environment variable; leave unset to use the
 # first available Developer ID Installer cert in the keychain.
@@ -34,14 +34,14 @@ TEAM_ID="${AGENTSCOPE_TEAM_ID:-}"
 VERSION=""
 OUTPUT_DIR="$REPO_ROOT/dist"
 
-# Auto-detect the app: prefer dist/export/AgentScope.app, then find the most
-# recently modified AgentScope.app inside any dist/export/ subdirectory
-# (Xcode exports to a timestamped folder like "AgentScope 2026-03-19 00-54-50/").
+# Auto-detect the app: prefer dist/export/OpenScope.app, then find the most
+# recently modified OpenScope.app inside any dist/export/ subdirectory
+# (Xcode exports to a timestamped folder like "OpenScope 2026-03-19 00-54-50/").
 _detect_app() {
-  local direct="$REPO_ROOT/dist/export/AgentScope.app"
+  local direct="$REPO_ROOT/dist/export/OpenScope.app"
   if [ -d "$direct" ]; then echo "$direct"; return; fi
   # Use stat to sort by mtime; -print0 + xargs -0 handles spaces in paths
-  find "$REPO_ROOT/dist/export" -maxdepth 2 -name "AgentScope.app" -type d -print0 2>/dev/null \
+  find "$REPO_ROOT/dist/export" -maxdepth 2 -name "OpenScope.app" -type d -print0 2>/dev/null \
     | xargs -0 stat -f "%m %N" 2>/dev/null \
     | sort -rn | head -1 | cut -d' ' -f2-
 }
@@ -65,12 +65,12 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-FINAL_PKG="$OUTPUT_DIR/AgentScope-$VERSION.pkg"
-COMPONENT_PKG="$OUTPUT_DIR/AgentScope-component.pkg"
-WORK_DIR=$(mktemp -d /tmp/agentscope-pkg.XXXXXX)
+FINAL_PKG="$OUTPUT_DIR/OpenScope-$VERSION.pkg"
+COMPONENT_PKG="$OUTPUT_DIR/OpenScope-component.pkg"
+WORK_DIR=$(mktemp -d /tmp/openscope-pkg.XXXXXX)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "==> AgentScope PKG builder"
+echo "==> OpenScope PKG builder"
 echo "    app:     $APP_PATH"
 echo "    version: $VERSION"
 echo "    output:  $FINAL_PKG"
@@ -78,20 +78,20 @@ echo "    output:  $FINAL_PKG"
 # ── Validate app bundle ───────────────────────────────────────────────────────
 if [ ! -d "$APP_PATH" ]; then
   echo "" >&2
-  echo "error: AgentScope.app not found (checked dist/export/ and subdirectories)" >&2
+  echo "error: OpenScope.app not found (checked dist/export/ and subdirectories)" >&2
   echo "" >&2
   echo "In Xcode: Product → Archive, then in the Organizer:" >&2
   echo "  Distribute App → Developer ID → Export → save to dist/export/" >&2
   echo "" >&2
-  echo "Or pass a different path: --app /path/to/AgentScope.app" >&2
+  echo "Or pass a different path: --app /path/to/OpenScope.app" >&2
   exit 1
 fi
 
 for required in \
-    "$APP_PATH/Contents/Resources/bin/ascope" \
-    "$APP_PATH/Contents/Resources/bin/ascoped" \
+    "$APP_PATH/Contents/Resources/bin/openscope" \
+    "$APP_PATH/Contents/Resources/bin/openscoped" \
     "$APP_PATH/Contents/Resources/bin/asapple" \
-    "$APP_PATH/Contents/Resources/launchd/com.ezblock.agentscope.ascoped.plist"
+    "$APP_PATH/Contents/Resources/launchd/com.ezblock.openscope.openscoped.plist"
 do
   if [ ! -f "$required" ]; then
     echo "error: missing from app bundle: $required" >&2
@@ -134,7 +134,7 @@ echo ""
 echo "==> Assembling payload..."
 PAYLOAD_DIR="$WORK_DIR/payload/Applications"
 mkdir -p "$PAYLOAD_DIR"
-cp -R "$APP_PATH" "$PAYLOAD_DIR/AgentScope.app"
+cp -R "$APP_PATH" "$PAYLOAD_DIR/OpenScope.app"
 
 # ── Copy installer scripts ────────────────────────────────────────────────────
 SCRIPTS_DIR="$WORK_DIR/scripts"
@@ -159,7 +159,7 @@ DIST_XML="$WORK_DIR/distribution.xml"
 cat > "$DIST_XML" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>AgentScope</title>
+    <title>OpenScope</title>
     <background file="background.png" alignment="bottomleft" scaling="none"/>
     <welcome file="welcome.html"/>
     <license file="license.txt"/>
@@ -175,7 +175,7 @@ cat > "$DIST_XML" <<XML
     <choice id="$BUNDLE_ID" visible="false">
         <pkg-ref id="$BUNDLE_ID"/>
     </choice>
-    <pkg-ref id="$BUNDLE_ID" version="$VERSION" onConclusion="none">AgentScope-component.pkg</pkg-ref>
+    <pkg-ref id="$BUNDLE_ID" version="$VERSION" onConclusion="none">OpenScope-component.pkg</pkg-ref>
 </installer-gui-script>
 XML
 
@@ -210,5 +210,5 @@ echo "  $FINAL_PKG"
 echo ""
 echo "  Test install:"
 echo "    sudo installer -pkg '$FINAL_PKG' -target /"
-echo "    ascope status && ascope doctor"
+echo "    openscope status && openscope doctor"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

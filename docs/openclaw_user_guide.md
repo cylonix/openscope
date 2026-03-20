@@ -6,16 +6,16 @@ important local macOS apps in a controlled way.
 The short version:
 
 - OpenClaw should not automate Notes, Calendar, or similar apps directly
-- OpenClaw should call `ascope`
-- AgentScope decides whether the request is allowed
+- OpenClaw should call `openscope`
+- OpenScope decides whether the request is allowed
 - every decision is logged
 - OpenClaw should only be configured with low-permission agent labels
 
 That gives you a safer setup than letting the agent talk to local apps however it wants.
 
-## What AgentScope Does
+## What OpenScope Does
 
-AgentScope is a local broker between OpenClaw and sensitive apps.
+OpenScope is a local broker between OpenClaw and sensitive apps.
 
 Instead of:
 
@@ -26,15 +26,15 @@ OpenClaw -> Apple Notes directly
 you use:
 
 ```text
-OpenClaw -> ascope -> ascoped -> protected local app
+OpenClaw -> openscope -> openscoped -> protected local app
 ```
 
 This adds four protections:
 
 1. OpenClaw uses a named agent identity such as `openclaw`
 2. You choose exactly which actions that agent may perform
-3. Requests are audited in `~/.agentscope/audit.jsonl`
-4. macOS Automation approval is attached to AgentScope's signed broker
+3. Requests are audited in `~/.openscope/audit.jsonl`
+4. macOS Automation approval is attached to OpenScope's signed broker
 
 For local setups, the agent name is best understood as a policy label, not as a
 secret API key.
@@ -43,59 +43,59 @@ secret API key.
 
 Today, the bundled protected app in this repository is Apple Notes.
 
-That means a novice user can use AgentScope right now to secure OpenClaw's access
+That means a novice user can use OpenScope right now to secure OpenClaw's access
 to Notes.
 
 For apps such as Calendar and other critical local applications, the same security
-model applies, but they need to exist as bundled or user-defined AgentScope apps
-before OpenClaw can use them through `ascope`.
+model applies, but they need to exist as bundled or user-defined OpenScope apps
+before OpenClaw can use them through `openscope`.
 
-## Install And Provision AgentScope
+## Install And Provision OpenScope
 
-Before OpenClaw can use AgentScope, AgentScope must be installed on the Mac.
+Before OpenClaw can use OpenScope, OpenScope must be installed on the Mac.
 
 ### Where To Get It
 
 Download the latest installer package from the project's latest GitHub release:
 
-[cylonix/agentscope latest release](https://github.com/cylonix/agentscope/releases/latest)
+[cylonix/openscope latest release](https://github.com/cylonix/openscope/releases/latest)
 
 Open the release page and download the packaged `.pkg` asset for your version.
 
 You can also browse all releases here:
 
-[cylonix/agentscope releases](https://github.com/cylonix/agentscope/releases)
+[cylonix/openscope releases](https://github.com/cylonix/openscope/releases)
 
 ### Install It
 
-Open `AgentScope.pkg` and complete the installer.
+Open `OpenScope.pkg` and complete the installer.
 
 The installer is expected to:
 
-- copy `AgentScope.app` into `/Applications`
-- install the `ascope` CLI
-- register and start the `ascoped` background service
-- create the initial `~/.agentscope/` configuration directory
+- copy `OpenScope.app` into `/Applications`
+- install the `openscope` CLI
+- register and start the `openscoped` background service
+- create the initial `~/.openscope/` configuration directory
 
 ### Verify The Install
 
 After installation, open Terminal and run:
 
 ```bash
-ascope status
-ascope doctor
+openscope status
+openscope doctor
 ```
 
-You want `ascope status` to show that the daemon is running.
+You want `openscope status` to show that the daemon is running.
 
 ### Provision OpenClaw
 
-Once AgentScope is installed, register a dedicated low-permission label for OpenClaw:
+Once OpenScope is installed, register a dedicated low-permission label for OpenClaw:
 
 Use one dedicated agent identity for OpenClaw:
 
 ```bash
-ascope agent register openclaw
+openscope agent register openclaw
 ```
 
 Then grant only the permissions OpenClaw actually needs.
@@ -109,11 +109,11 @@ The important practical rule is:
 For example, if OpenClaw only needs your `Work` notes:
 
 ```bash
-ascope policy allow --agent openclaw --app notes --action list_folders
-ascope policy allow --agent openclaw --app notes --action list_notes --folder Work
-ascope policy allow --agent openclaw --app notes --action read_note --folder Work
-ascope policy deny --agent openclaw --app notes --action list_notes --folder Private
-ascope policy deny --agent openclaw --app notes --action read_note --folder Private
+openscope policy allow --agent openclaw --app notes --action list_folders
+openscope policy allow --agent openclaw --app notes --action list_notes --folder Work
+openscope policy allow --agent openclaw --app notes --action read_note --folder Work
+openscope policy deny --agent openclaw --app notes --action list_notes --folder Private
+openscope policy deny --agent openclaw --app notes --action read_note --folder Private
 ```
 
 This is much better than giving the agent broad unrestricted access.
@@ -129,29 +129,29 @@ approval.
 
 Good setup behavior:
 
-- tell the user where to download AgentScope
+- tell the user where to download OpenScope
 - ask before running install or policy commands
-- verify setup with `ascope status` and `ascope doctor`
+- verify setup with `openscope status` and `openscope doctor`
 
 Risky setup behavior:
 
-- downloading and installing AgentScope without clear user consent
+- downloading and installing OpenScope without clear user consent
 - registering broader-permission labels than the user asked for
 - configuring Notes or future apps with wider policy than necessary
 
 ## First-Time Automation Approval
 
-The first time AgentScope accesses Notes, macOS should show an Automation prompt.
-Approve it for AgentScope.
+The first time OpenScope accesses Notes, macOS should show an Automation prompt.
+Approve it for OpenScope.
 
-## How OpenClaw Should Use AgentScope
+## How OpenClaw Should Use OpenScope
 
 OpenClaw should use commands like these:
 
 ```bash
-ascope notes list_folders --agent openclaw
-ascope notes list_notes --agent openclaw --folder "Work"
-ascope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" --body-only
+openscope notes list_folders --agent openclaw
+openscope notes list_notes --agent openclaw --folder "Work"
+openscope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" --body-only
 ```
 
 The best novice pattern is:
@@ -165,14 +165,14 @@ The best novice pattern is:
 
 Use this rule of thumb:
 
-- if the app holds sensitive personal or business data, put it behind AgentScope
+- if the app holds sensitive personal or business data, put it behind OpenScope
 - if OpenClaw needs access, give it a dedicated agent ID
 - start with read-only, narrow permissions
 - widen policy only when you have a real use case
 
 For Notes, this is already available.
 
-For Calendar and similar apps, the next step is to add or enable an AgentScope app
+For Calendar and similar apps, the next step is to add or enable an OpenScope app
 definition for that target, then give `openclaw` a scoped policy for that app.
 
 ## Common Safe Policy Shapes
@@ -189,24 +189,24 @@ definition for that target, then give `openclaw` a scoped policy for that app.
 
 - allow all folders
 - reuse the `demo` agent for a production OpenClaw deployment
-- let OpenClaw use raw AppleScript outside AgentScope
+- let OpenClaw use raw AppleScript outside OpenScope
 - create an `admin`-style label and also give OpenClaw access to it
 
 ## Operational Tips
 
 - Use one agent ID per tool or product integration
 - Keep personal and business folders separated if possible
-- Review `~/.agentscope/audit.jsonl` occasionally
-- Use `ascope policy show --agent openclaw` to inspect active rules
+- Review `~/.openscope/audit.jsonl` occasionally
+- Use `openscope policy show --agent openclaw` to inspect active rules
 
 ## Troubleshooting
 
 If OpenClaw says it cannot access a protected app:
 
 ```bash
-ascope status
-ascope doctor
-ascope policy show --agent openclaw
+openscope status
+openscope doctor
+openscope policy show --agent openclaw
 ```
 
 If access is denied, that usually means the security policy is working as intended.
@@ -216,9 +216,9 @@ Add a new allow rule only if you want that behavior.
 
 If you are configuring OpenClaw, tell it:
 
-- use `ascope` for protected local app access
+- use `openscope` for protected local app access
 - always pass `--agent openclaw`
-- never bypass AgentScope with direct automation
+- never bypass OpenScope with direct automation
 - if policy denies a request, ask for permission instead of working around it
 - never use any agent label other than the one explicitly provisioned for OpenClaw
 

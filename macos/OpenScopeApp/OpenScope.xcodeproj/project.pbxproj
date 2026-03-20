@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		256BEC0A2F6B145A00DDF9A7 /* AgentScope.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentScope.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		256BEC0A2F6B145A00DDF9A7 /* OpenScope.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenScope.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		256BEC0C2F6B145A00DDF9A7 /* AgentScope */ = {
+		256BEC0C2F6B145A00DDF9A7 /* OpenScope */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = AgentScope;
+			path = OpenScope;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -32,7 +32,7 @@
 		256BEC012F6B145A00DDF9A7 = {
 			isa = PBXGroup;
 			children = (
-				256BEC0C2F6B145A00DDF9A7 /* AgentScope */,
+				256BEC0C2F6B145A00DDF9A7 /* OpenScope */,
 				256BEC0B2F6B145A00DDF9A7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -40,7 +40,7 @@
 		256BEC0B2F6B145A00DDF9A7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				256BEC0A2F6B145A00DDF9A7 /* AgentScope.app */,
+				256BEC0A2F6B145A00DDF9A7 /* OpenScope.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		256BEC092F6B145A00DDF9A7 /* AgentScope */ = {
+		256BEC092F6B145A00DDF9A7 /* OpenScope */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 256BEC152F6B145D00DDF9A7 /* Build configuration list for PBXNativeTarget "AgentScope" */;
+			buildConfigurationList = 256BEC152F6B145D00DDF9A7 /* Build configuration list for PBXNativeTarget "OpenScope" */;
 			buildPhases = (
 				256BEC062F6B145A00DDF9A7 /* Sources */,
 				256BEC072F6B145A00DDF9A7 /* Frameworks */,
@@ -62,13 +62,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				256BEC0C2F6B145A00DDF9A7 /* AgentScope */,
+				256BEC0C2F6B145A00DDF9A7 /* OpenScope */,
 			);
-			name = AgentScope;
+			name = OpenScope;
 			packageProductDependencies = (
 			);
-			productName = AgentScope;
-			productReference = 256BEC0A2F6B145A00DDF9A7 /* AgentScope.app */;
+			productName = OpenScope;
+			productReference = 256BEC0A2F6B145A00DDF9A7 /* OpenScope.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -86,7 +86,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 256BEC052F6B145A00DDF9A7 /* Build configuration list for PBXProject "AgentScope" */;
+			buildConfigurationList = 256BEC052F6B145A00DDF9A7 /* Build configuration list for PBXProject "OpenScope" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -100,7 +100,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				256BEC092F6B145A00DDF9A7 /* AgentScope */,
+				256BEC092F6B145A00DDF9A7 /* OpenScope */,
 			);
 		};
 /* End PBXProject section */
@@ -132,7 +132,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/local/go/bin:$PATH\"\nif ! command -v go >/dev/null 2>&1; then\n  echo \"error: go toolchain not found in PATH=$PATH\" >&2\n  exit 1\nfi\nif ! command -v swiftc >/dev/null 2>&1; then\n  echo \"error: swiftc not found in PATH=$PATH\" >&2\n  exit 1\nfi\n\nROOT=\"$SRCROOT/../..\"\nBIN_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/bin\"\nLAUNCHD_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/launchd\"\nSWIFT_MODULE_CACHE=\"$ROOT/.cache/swift-module-cache\"\n\nmkdir -p \"$BIN_DIR\" \"$LAUNCHD_DIR\" \"$SWIFT_MODULE_CACHE\"\n\ncd \"$ROOT\"\n\nenv GOCACHE=\"$ROOT/.cache/go-build\" GOMODCACHE=\"$ROOT/.cache/go-mod\" go build -o \"$BIN_DIR/ascope\" ./cmd/ascope\nenv GOCACHE=\"$ROOT/.cache/go-build\" GOMODCACHE=\"$ROOT/.cache/go-mod\" go build -o \"$BIN_DIR/ascoped\" ./cmd/ascoped\nswiftc -module-cache-path \"$SWIFT_MODULE_CACHE\" -framework Foundation -framework AppKit -o \"$BIN_DIR/asapple\" \"$ROOT/macos/AppleScriptRunner/main.swift\"\n\nchmod 755 \"$BIN_DIR/ascope\" \"$BIN_DIR/ascoped\" \"$BIN_DIR/asapple\"\ncp \"$ROOT/macos/LaunchAgent/com.ezblock.agentscope.ascoped.plist\" \"$LAUNCHD_DIR/\"\n\n# Sign all three binaries with Hardened Runtime so notarization accepts them.\n# EXPANDED_CODE_SIGN_IDENTITY is provided by Xcode during signed builds.\n# It is empty for local unsigned Debug builds — skip signing in that case.\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  for bin in \"$BIN_DIR/ascope\" \"$BIN_DIR/ascoped\"; do\n    codesign --options runtime \\\n             --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n             --force \\\n             \"$bin\"\n  done\n  # asapple sends Apple Events to Notes. Sign it with the app bundle ID so\n  # macOS TCC grants it the same Automation access as AgentScope.app.\n  ASAPPLE_ENT=\"$ROOT/macos/AppleScriptRunner/asapple.entitlements\"\n  codesign --options runtime \\\n           --identifier com.ezblock.agentscope \\\n           --entitlements \"$ASAPPLE_ENT\" \\\n           --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n           --force \\\n           \"$BIN_DIR/asapple\"\n  echo \"Signed with Hardened Runtime: ascope ascoped asapple (com.ezblock.agentscope)\"\nfi\n";
+			shellScript = "set -euo pipefail\n\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/local/go/bin:$PATH\"\nif ! command -v go >/dev/null 2>&1; then\n  echo \"error: go toolchain not found in PATH=$PATH\" >&2\n  exit 1\nfi\nif ! command -v swiftc >/dev/null 2>&1; then\n  echo \"error: swiftc not found in PATH=$PATH\" >&2\n  exit 1\nfi\n\nROOT=\"$SRCROOT/../..\"\nBIN_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/bin\"\nLAUNCHD_DIR=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/launchd\"\nSWIFT_MODULE_CACHE=\"$ROOT/.cache/swift-module-cache\"\n\nmkdir -p \"$BIN_DIR\" \"$LAUNCHD_DIR\" \"$SWIFT_MODULE_CACHE\"\n\ncd \"$ROOT\"\n\nenv GOCACHE=\"$ROOT/.cache/go-build\" GOMODCACHE=\"$ROOT/.cache/go-mod\" go build -o \"$BIN_DIR/openscope\" ./cmd/openscope\nenv GOCACHE=\"$ROOT/.cache/go-build\" GOMODCACHE=\"$ROOT/.cache/go-mod\" go build -o \"$BIN_DIR/openscoped\" ./cmd/openscoped\nswiftc -module-cache-path \"$SWIFT_MODULE_CACHE\" -framework Foundation -framework AppKit -o \"$BIN_DIR/asapple\" \"$ROOT/macos/AppleScriptRunner/main.swift\"\n\nchmod 755 \"$BIN_DIR/openscope\" \"$BIN_DIR/openscoped\" \"$BIN_DIR/asapple\"\ncp \"$ROOT/macos/LaunchAgent/com.ezblock.openscope.openscoped.plist\" \"$LAUNCHD_DIR/\"\n\n# Sign all three binaries with Hardened Runtime so notarization accepts them.\n# EXPANDED_CODE_SIGN_IDENTITY is provided by Xcode during signed builds.\n# It is empty for local unsigned Debug builds — skip signing in that case.\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  for bin in \"$BIN_DIR/openscope\" \"$BIN_DIR/openscoped\"; do\n    codesign --options runtime \\\n             --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n             --force \\\n             \"$bin\"\n  done\n  # asapple sends Apple Events to Notes. Sign it with the app bundle ID so\n  # macOS TCC grants it the same Automation access as OpenScope.app.\n  ASAPPLE_ENT=\"$ROOT/macos/AppleScriptRunner/asapple.entitlements\"\n  codesign --options runtime \\\n           --identifier com.ezblock.openscope \\\n           --entitlements \"$ASAPPLE_ENT\" \\\n           --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n           --force \\\n           \"$BIN_DIR/asapple\"\n  echo \"Signed with Hardened Runtime: openscope openscoped asapple (com.ezblock.openscope)\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -268,7 +268,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = AgentScope/AgentScope.entitlements;
+				CODE_SIGN_ENTITLEMENTS = OpenScope/OpenScope.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = P7Y2NJ7JP3;
@@ -277,12 +277,12 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = AgentScope/Info.plist;
+				INFOPLIST_FILE = OpenScope/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ezblock.agentscope;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ezblock.openscope;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -300,7 +300,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = AgentScope/AgentScope.entitlements;
+				CODE_SIGN_ENTITLEMENTS = OpenScope/OpenScope.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = P7Y2NJ7JP3;
@@ -309,12 +309,12 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = AgentScope/Info.plist;
+				INFOPLIST_FILE = OpenScope/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.ezblock.agentscope;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ezblock.openscope;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -330,7 +330,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		256BEC052F6B145A00DDF9A7 /* Build configuration list for PBXProject "AgentScope" */ = {
+		256BEC052F6B145A00DDF9A7 /* Build configuration list for PBXProject "OpenScope" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				256BEC132F6B145D00DDF9A7 /* Debug */,
@@ -339,7 +339,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		256BEC152F6B145D00DDF9A7 /* Build configuration list for PBXNativeTarget "AgentScope" */ = {
+		256BEC152F6B145D00DDF9A7 /* Build configuration list for PBXNativeTarget "OpenScope" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				256BEC162F6B145D00DDF9A7 /* Debug */,

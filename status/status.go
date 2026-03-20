@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/agentscope/ascope/config"
+	"github.com/openscope/openscope/config"
 )
 
 type Report struct {

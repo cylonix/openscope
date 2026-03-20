@@ -11,9 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/agentscope/ascope/appdef"
-	"github.com/agentscope/ascope/executor"
-	"github.com/agentscope/ascope/resources"
+	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/executor"
+	"github.com/openscope/openscope/resources"
 )
 
 type Executor struct{}
@@ -93,7 +93,7 @@ func materializeScript(def appdef.Definition, scriptRef string) (string, func(),
 			return "", nil, fmt.Errorf("read bundled script %q: %w", bundledPath, err)
 		}
 
-		file, err := os.CreateTemp(validTempDir(), "ascope-*.applescript")
+		file, err := os.CreateTemp(validTempDir(), "openscope-*.applescript")
 		if err != nil {
 			return "", nil, fmt.Errorf("create temp script: %w", err)
 		}
@@ -116,7 +116,7 @@ func materializeScript(def appdef.Definition, scriptRef string) (string, func(),
 }
 
 func runnerPath() (string, error) {
-	if configured := os.Getenv("ASCOPE_APPLESCRIPT_HELPER"); configured != "" {
+	if configured := os.Getenv("OPENSCOPE_APPLESCRIPT_HELPER"); configured != "" {
 		return configured, nil
 	}
 
@@ -134,7 +134,7 @@ func runnerPath() (string, error) {
 }
 
 // validTempDir returns os.TempDir() if it exists, otherwise /private/tmp.
-// When ascoped is started by the macOS PKG installer its TMPDIR points to the
+// When openscoped is started by the macOS PKG installer its TMPDIR points to the
 // installer sandbox (PKInstallSandbox.*), which is deleted after install.
 func validTempDir() string {
 	d := os.TempDir()

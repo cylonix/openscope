@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/agentscope/ascope/config"
-	"github.com/agentscope/ascope/daemon"
+	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/daemon"
 )
 
 func main() {

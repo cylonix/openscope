@@ -4,31 +4,23 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
-	<key>CFBundleDisplayName</key>
-	<string>AgentScope</string>
 	<key>CFBundleExecutable</key>
-	<string>AgentScope</string>
+	<string>openscoped</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.ezblock.agentscope</string>
+	<string>com.ezblock.openscope.openscoped</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AgentScope</string>
+	<string>openscoped</string>
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.developer-tools</string>
-	<key>LSBackgroundOnly</key>
-	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>AgentScope needs Automation access to broker approved Apple app actions for AI agents according to your local policy.</string>
-	<key>NSHumanReadableCopyright</key>
-	<string>Copyright EZBLOCK INC.</string>
+	<string>OpenScope broker helper needs Automation access to perform approved app actions on your behalf.</string>
 </dict>
 </plist>

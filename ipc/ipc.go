@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/agentscope/ascope/config"
+	"github.com/openscope/openscope/config"
 )
 
 type Request struct {

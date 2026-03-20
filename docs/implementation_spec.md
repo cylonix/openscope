@@ -1,16 +1,16 @@
-# AgentScope Revised Implementation Spec
+# OpenScope Revised Implementation Spec
 
 ## Summary
 
-AgentScope is a local application access broker for AI agents.
+OpenScope is a local application access broker for AI agents.
 
-The correct macOS runtime shape for AgentScope is:
+The correct macOS runtime shape for OpenScope is:
 
-- `ascope`: CLI wrapper invoked by an AI agent or the user
-- `ascoped`: signed local broker daemon with stable app identity
-- local IPC between `ascope` and `ascoped`
-- policy enforcement and audit logging in `ascoped`
-- Apple app automation performed by `ascoped`
+- `openscope`: CLI wrapper invoked by an AI agent or the user
+- `openscoped`: signed local broker daemon with stable app identity
+- local IPC between `openscope` and `openscoped`
+- policy enforcement and audit logging in `openscoped`
+- Apple app automation performed by `openscoped`
 
 The first protected app is Apple Notes.
 
@@ -22,38 +22,38 @@ The user mental model remains:
 
 ```text
 original app action
--> protected by adding "ascope <app>" in front
--> AgentScope authorizes, audits, executes, and returns output
+-> protected by adding "openscope <app>" in front
+-> OpenScope authorizes, audits, executes, and returns output
 ```
 
 Example:
 
 ```bash
-ascope notes read_note --agent summarizer --folder Work --note "Weekly Notes"
+openscope notes read_note --agent summarizer --folder Work --note "Weekly Notes"
 ```
 
 Actual execution flow:
 
-1. AI agent invokes `ascope`
-2. `ascope` sends request to local `ascoped` over Unix socket IPC
-3. `ascoped` loads enabled app definition and policy
-4. `ascoped` validates action and parameters from YAML
-5. `ascoped` evaluates policy
-6. `ascoped` executes AppleScript in-process if authorized
-7. `ascoped` writes audit event
-8. `ascoped` returns normalized response to `ascope`
-9. `ascope` prints stdout/stderr for AI agent
+1. AI agent invokes `openscope`
+2. `openscope` sends request to local `openscoped` over Unix socket IPC
+3. `openscoped` loads enabled app definition and policy
+4. `openscoped` validates action and parameters from YAML
+5. `openscoped` evaluates policy
+6. `openscoped` executes AppleScript in-process if authorized
+7. `openscoped` writes audit event
+8. `openscoped` returns normalized response to `openscope`
+9. `openscope` prints stdout/stderr for AI agent
 
-## Why `ascoped` Is Core
+## Why `openscoped` Is Core
 
-`ascoped` is not only an architectural convenience.
+`openscoped` is not only an architectural convenience.
 
 It is the stable signed app identity that should hold macOS Automation approval for controlling Apple Notes.
 
-That is how AgentScope can support the intended experience:
+That is how OpenScope can support the intended experience:
 
-- AI agent approves use of `ascope`
-- macOS approves `ascoped` automating Notes
+- AI agent approves use of `openscope`
+- macOS approves `openscoped` automating Notes
 - policy is enforced without repeated per-invocation user prompts
 
 ## Goals
@@ -76,68 +76,68 @@ That is how AgentScope can support the intended experience:
 
 ### Binaries
 
-- `ascope`: CLI client
-- `ascoped`: local broker daemon
+- `openscope`: CLI client
+- `openscoped`: local broker daemon
 
 ### Top-level Commands
 
 ```bash
-ascope agent ...
-ascope app ...
-ascope policy ...
-ascope doctor
-ascope status
-ascope <app> <action> [flags]
+openscope agent ...
+openscope app ...
+openscope policy ...
+openscope doctor
+openscope status
+openscope <app> <action> [flags]
 ```
 
 Protected actions are always invoked through:
 
 ```bash
-ascope <app> <action> --agent <agent_id> [action flags]
+openscope <app> <action> --agent <agent_id> [action flags]
 ```
 
 ### Administrative Commands
 
 ```bash
-ascope agent register <agent_id>
-ascope agent list
+openscope agent register <agent_id>
+openscope agent list
 
-ascope app list
-ascope app show <app>
-ascope app enable <app>
-ascope app disable <app>
-ascope app validate [--file <path>]
+openscope app list
+openscope app show <app>
+openscope app enable <app>
+openscope app disable <app>
+openscope app validate [--file <path>]
 
-ascope policy show --agent <agent_id>
-ascope policy list
-ascope policy validate
+openscope policy show --agent <agent_id>
+openscope policy list
+openscope policy validate
 
-ascope status
-ascope doctor
+openscope status
+openscope doctor
 ```
 
 ## IPC Design
 
 ### Transport
 
-Use a Unix domain socket for local IPC between `ascope` and `ascoped`.
+Use a Unix domain socket for local IPC between `openscope` and `openscoped`.
 
 Example path:
 
 ```text
-~/.agentscope/run/ascoped.sock
+~/.openscope/run/openscoped.sock
 ```
 
 ### IPC Responsibilities
 
-`ascope`:
+`openscope`:
 
 - parse CLI command
 - package request
 - send request to daemon
 - print response
 
-`ascoped`:
+`openscoped`:
 
 - authenticate or identify caller as needed in future phases
 - validate request
@@ -185,7 +185,7 @@ Initial IPC payload can be JSON:
 
 ### Transport Semantics
 
-AgentScope behaves like a process-oriented broker:
+OpenScope behaves like a process-oriented broker:
 
 - `stdout`: machine-readable response data
 - `stderr`: diagnostics and error text
@@ -202,7 +202,7 @@ Some actions may expose a text-only mode for agent workflows that want direct te
 Example:
 
 ```bash
-ascope notes read_note --agent research_assistant --folder Work --note "Sprint Plan" --body-only
+openscope notes read_note --agent research_assistant --folder Work --note "Sprint Plan" --body-only
 ```
 
 Response:
@@ -240,7 +240,7 @@ Bundled app definitions:
 
 User app definitions:
 
-- `~/.agentscope/apps.d/*.yaml`
+- `~/.openscope/apps.d/*.yaml`
 
 Enabled state:
 
@@ -304,7 +304,7 @@ The initial backend remains `applescript`, but the execution path changes:
 
 - do not spawn `/usr/bin/osascript` as the core production path
 - execute AppleScript in-process from the signed daemon
-- let macOS Automation approval attach to `ascoped`
+- let macOS Automation approval attach to `openscoped`
 
 ### Why Keep AppleScript
 
@@ -318,7 +318,7 @@ AppleScript keeps the system user-extensible:
 
 The goal is not only to run scripts.
 
-The goal is for the sender of Apple Events to have a stable signed app identity so that macOS approval can be granted to AgentScope once and then reused.
+The goal is for the sender of Apple Events to have a stable signed app identity so that macOS approval can be granted to OpenScope once and then reused.
 
 ### Future Backend Option
 
@@ -363,19 +363,19 @@ The exact mechanism can be finalized during implementation, but it must not allo
 
 Initial storage:
 
-- `~/.agentscope/policies.yaml`
+- `~/.openscope/policies.yaml`
 
 Audit log:
 
-- `~/.agentscope/audit.jsonl`
+- `~/.openscope/audit.jsonl`
 
 Agent registry:
 
-- `~/.agentscope/agents.yaml`
+- `~/.openscope/agents.yaml`
 
 Enabled apps state:
 
-- `~/.agentscope/state/enabled_apps.yaml`
+- `~/.openscope/state/enabled_apps.yaml`
 
 ### Policy Example
 
@@ -416,7 +416,7 @@ rules:
 
 ### Audit Storage
 
-- `~/.agentscope/audit.jsonl`
+- `~/.openscope/audit.jsonl`
 
 ### Audit Event Fields
 
@@ -432,7 +432,7 @@ rules:
 ## Config Layout
 
 ```text
-~/.agentscope/
+~/.openscope/
   agents.yaml
   policies.yaml
   audit.jsonl
@@ -440,7 +440,7 @@ rules:
   state/
     enabled_apps.yaml
   run/
-    ascoped.sock
+    openscoped.sock
 ```
 
 Bundled manifests and AppleScript resources are embedded in the signed product.
@@ -457,8 +457,8 @@ Bundled manifests and AppleScript resources are embedded in the signed product.
 ## Suggested Go Structure
 
 ```text
-cmd/ascope
-cmd/ascoped
+cmd/openscope
+cmd/openscoped
 cli
 daemon
 ipc
@@ -480,7 +480,7 @@ resources
 ### Milestone 1: Core Bootstrap
 
 - initialize Go module
-- add both binaries: `ascope` and `ascoped`
+- add both binaries: `openscope` and `openscoped`
 - add config path discovery
 - add embedded resources support
 
@@ -500,9 +500,9 @@ resources
 
 ### Milestone 4: IPC
 
-- create Unix socket server in `ascoped`
+- create Unix socket server in `openscoped`
 - implement request and response types
-- implement CLI client in `ascope`
+- implement CLI client in `openscope`
 - return daemon-unavailable errors cleanly
 
 ### Milestone 5: In-Process AppleScript Execution

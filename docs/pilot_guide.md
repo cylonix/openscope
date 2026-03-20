@@ -1,6 +1,6 @@
-# AgentScope Pilot Guide
+# OpenScope Pilot Guide
 
-AgentScope is a local application access broker for AI agents. It lets authorized agents
+OpenScope is a local application access broker for AI agents. It lets authorized agents
 access protected apps (like Apple Notes) via a policy-enforced, audited channel — without
 repeated macOS automation permission prompts.
 
@@ -8,40 +8,40 @@ repeated macOS automation permission prompts.
 
 ```
 AI agent
-  -> ascope CLI          (thin client, invoked per request)
-  -> ascoped daemon      (signed background process, holds macOS automation approval)
+  -> openscope CLI          (thin client, invoked per request)
+  -> openscoped daemon      (signed background process, holds macOS automation approval)
   -> Apple Notes         (via in-process AppleScript)
 ```
 
-- `ascope` — CLI wrapper that sends requests to the daemon
-- `ascoped` — signed background daemon, enforces policy, executes app actions, logs audit events
+- `openscope` — CLI wrapper that sends requests to the daemon
+- `openscoped` — signed background daemon, enforces policy, executes app actions, logs audit events
 
 ---
 
 ## Installation
 
-Double-click `AgentScope-<version>.pkg` and follow the installer. No manual steps are
+Double-click `OpenScope-<version>.pkg` and follow the installer. No manual steps are
 required — the installer handles:
 
-- Copying `AgentScope.app` to `/Applications`
-- Registering and starting the `ascoped` background service
-- Installing `ascope` to `/usr/local/bin`
-- Creating `~/.agentscope/` with a ready-to-use `demo` agent and default policy
+- Copying `OpenScope.app` to `/Applications`
+- Registering and starting the `openscoped` background service
+- Installing `openscope` to `/usr/local/bin`
+- Creating `~/.openscope/` with a ready-to-use `demo` agent and default policy
 
 After the installer completes, open a terminal and verify:
 
 ```bash
-ascope status
+openscope status
 ```
 
 You should see `"running": true` in the output.
 
 ### Granting macOS Automation Permission
 
-The first time `ascoped` accesses Apple Notes, macOS will show a one-time prompt.
+The first time `openscoped` accesses Apple Notes, macOS will show a one-time prompt.
 Accept it. You can also pre-grant via:
 
-**System Settings → Privacy & Security → Automation → AgentScope → Notes ✓**
+**System Settings → Privacy & Security → Automation → OpenScope → Notes ✓**
 
 ---
 
@@ -52,16 +52,16 @@ immediately after install to confirm everything works:
 
 ```bash
 # List all Note folders
-ascope notes list_folders --agent demo
+openscope notes list_folders --agent demo
 
 # List notes in a folder (replace "Work" with a real folder name from your Notes)
-ascope notes list_notes --agent demo --folder Work
+openscope notes list_notes --agent demo --folder Work
 
 # Read a note
-ascope notes read_note --agent demo --folder Work --note "My Note"
+openscope notes read_note --agent demo --folder Work --note "My Note"
 
 # Read just the body (plain text)
-ascope notes read_note --agent demo --folder Work --note "My Note" --body-only
+openscope notes read_note --agent demo --folder Work --note "My Note" --body-only
 ```
 
 ---
@@ -71,13 +71,13 @@ ascope notes read_note --agent demo --folder Work --note "My Note" --body-only
 Register a new agent:
 
 ```bash
-ascope agent register my-agent
+openscope agent register my-agent
 ```
 
 List all registered agents:
 
 ```bash
-ascope agent list
+openscope agent list
 ```
 
 The `demo` agent is pre-registered by the installer.
@@ -93,35 +93,35 @@ Rules are evaluated in order: `deny` overrides `allow`; no matching `allow` = de
 
 ```bash
 # Allow an agent to list all folders
-ascope policy allow --agent my-agent --app notes --action list_folders
+openscope policy allow --agent my-agent --app notes --action list_folders
 
 # Allow access to a specific folder only
-ascope policy allow --agent my-agent --app notes --action list_notes --folder Work
-ascope policy allow --agent my-agent --app notes --action read_note  --folder Work
+openscope policy allow --agent my-agent --app notes --action list_notes --folder Work
+openscope policy allow --agent my-agent --app notes --action read_note  --folder Work
 ```
 
 ### Adding deny rules
 
 ```bash
 # Block access to a specific folder (overrides any allow)
-ascope policy deny --agent my-agent --app notes --action list_notes --folder Private
-ascope policy deny --agent my-agent --app notes --action read_note  --folder Private
+openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
+openscope policy deny --agent my-agent --app notes --action read_note  --folder Private
 ```
 
 ### Viewing policy
 
 ```bash
 # Show all rules
-ascope policy list
+openscope policy list
 
 # Show rules for one agent
-ascope policy show --agent demo
+openscope policy show --agent demo
 ```
 
 ### Validating policy
 
 ```bash
-ascope policy validate
+openscope policy validate
 ```
 
 ### Try it: block a folder and verify the deny
@@ -131,27 +131,27 @@ ascope policy validate
 2. Confirm the `demo` agent can currently list it:
 
 ```bash
-ascope notes list_notes --agent demo --folder Private
+openscope notes list_notes --agent demo --folder Private
 ```
 
 3. Add a deny rule:
 
 ```bash
-ascope policy deny --agent demo --app notes --action list_notes --folder Private
-ascope policy deny --agent demo --app notes --action read_note  --folder Private
+openscope policy deny --agent demo --app notes --action list_notes --folder Private
+openscope policy deny --agent demo --app notes --action read_note  --folder Private
 ```
 
 4. Try again — the request should now be denied:
 
 ```bash
-ascope notes list_notes --agent demo --folder Private
+openscope notes list_notes --agent demo --folder Private
 # expected: {"ok": false, ...}
 ```
 
 5. Confirm the audit log captured both the allow and deny decisions:
 
 ```bash
-tail -5 ~/.agentscope/audit.jsonl
+tail -5 ~/.openscope/audit.jsonl
 ```
 
 ---
@@ -163,7 +163,7 @@ tail -5 ~/.agentscope/audit.jsonl
 List all note folders.
 
 ```bash
-ascope notes list_folders --agent <agent-id>
+openscope notes list_folders --agent <agent-id>
 ```
 
 ```json
@@ -176,7 +176,7 @@ ascope notes list_folders --agent <agent-id>
 List notes in a folder.
 
 ```bash
-ascope notes list_notes --agent <agent-id> --folder Work
+openscope notes list_notes --agent <agent-id> --folder Work
 ```
 
 ```json
@@ -188,7 +188,7 @@ ascope notes list_notes --agent <agent-id> --folder Work
 Read a note's body.
 
 ```bash
-ascope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes"
+openscope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes"
 ```
 
 ```json
@@ -198,7 +198,7 @@ ascope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes"
 Body-only mode (plain text, useful for piping into other tools):
 
 ```bash
-ascope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes" --body-only
+openscope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes" --body-only
 ```
 
 ---
@@ -206,7 +206,7 @@ ascope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes" --
 ## Checking Status
 
 ```bash
-ascope status
+openscope status
 ```
 
 Shows daemon liveness, socket path, config directory, and registered agent/app counts.
@@ -216,7 +216,7 @@ Shows daemon liveness, socket path, config directory, and registered agent/app c
 ## Diagnostics
 
 ```bash
-ascope doctor
+openscope doctor
 ```
 
 Runs checks on config layout, policy validity, daemon reachability, and agent registry.
@@ -225,10 +225,10 @@ Runs checks on config layout, policy validity, daemon reachability, and agent re
 
 ## Reviewing the Audit Log
 
-Every allow and deny decision is recorded in `~/.agentscope/audit.jsonl`.
+Every allow and deny decision is recorded in `~/.openscope/audit.jsonl`.
 
 ```bash
-tail -20 ~/.agentscope/audit.jsonl
+tail -20 ~/.openscope/audit.jsonl
 ```
 
 Each line includes: timestamp, agent, app, action, parameters, decision, and reason.
@@ -241,32 +241,32 @@ Each line includes: timestamp, agent, app, action, parameters, decision, and rea
 
 ```bash
 # Check daemon log
-cat /tmp/com.ezblock.agentscope.ascoped.stderr.log
+cat /tmp/com.ezblock.openscope.openscoped.stderr.log
 
 # Restart the daemon
-launchctl kickstart -k gui/$(id -u)/com.ezblock.agentscope.ascoped
+launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped
 ```
 
 ### Request denied unexpectedly
 
 ```bash
 # Check what rules apply to your agent
-ascope policy show --agent demo
+openscope policy show --agent demo
 
 # Check the audit log for the deny reason
-tail -5 ~/.agentscope/audit.jsonl
+tail -5 ~/.openscope/audit.jsonl
 ```
 
 ### macOS Automation permission missing
 
-- Ensure `AgentScope.app` is in `/Applications` (signed copy, not a dev build).
-- Open **System Settings → Privacy & Security → Automation**, find AgentScope, enable Notes.
+- Ensure `OpenScope.app` is in `/Applications` (signed copy, not a dev build).
+- Open **System Settings → Privacy & Security → Automation**, find OpenScope, enable Notes.
 
 ### `daemon unavailable` error
 
 ```bash
-ls ~/.agentscope/run/ascoped.sock   # should exist
-ascope status
+ls ~/.openscope/run/openscoped.sock   # should exist
+openscope status
 ```
 
 If the socket is missing, restart via `launchctl kickstart` (see above).
@@ -276,7 +276,7 @@ If the socket is missing, restart via `launchctl kickstart` (see above).
 ## Configuration Directory
 
 ```
-~/.agentscope/
+~/.openscope/
   agents.yaml          # registered agent identities
   policies.yaml        # access rules
   audit.jsonl          # append-only audit log
@@ -284,7 +284,7 @@ If the socket is missing, restart via `launchctl kickstart` (see above).
   state/
     enabled_apps.yaml  # which user-defined apps are enabled
   run/
-    ascoped.sock       # daemon Unix socket
+    openscoped.sock       # daemon Unix socket
 ```
 
 ---
@@ -292,11 +292,11 @@ If the socket is missing, restart via `launchctl kickstart` (see above).
 ## App Management (Advanced)
 
 ```bash
-ascope app list                          # list all apps (bundled + user-defined)
-ascope app show notes                    # show details for a specific app
-ascope app validate /path/to/myapp.yaml  # validate a custom app definition
-ascope app enable myapp                  # enable a user-defined app
-ascope app disable myapp                 # disable a user-defined app
+openscope app list                          # list all apps (bundled + user-defined)
+openscope app show notes                    # show details for a specific app
+openscope app validate /path/to/myapp.yaml  # validate a custom app definition
+openscope app enable myapp                  # enable a user-defined app
+openscope app disable myapp                 # disable a user-defined app
 ```
 
 Bundled apps (like `notes`) are always enabled.

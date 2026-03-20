@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/agentscope/ascope/appdef"
+	"github.com/openscope/openscope/appdef"
 )
 
 type loadedApp struct {

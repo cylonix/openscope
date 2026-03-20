@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/agentscope/ascope/config"
+	"github.com/openscope/openscope/config"
 )
 
 type Report struct {
@@ -36,31 +36,31 @@ func Run(paths config.Paths) Report {
 	if _, err := os.Stat(paths.ConfigDir); err == nil {
 		report.ConfigDirExists = true
 	} else {
-		hints = append(hints, "config directory missing — run: ascope status")
+		hints = append(hints, "config directory missing — run: openscope status")
 	}
 
 	// Daemon reachability
 	report.DaemonRunning = checkSocket(paths.SocketPath)
 	if !report.DaemonRunning {
-		hints = append(hints, "daemon not running — restart: launchctl kickstart -k gui/$(id -u)/com.ezblock.agentscope.ascoped")
+		hints = append(hints, "daemon not running — restart: launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped")
 	}
 
 	// asapple binary
 	asapplePath := findAsapple()
 	report.AsapplePath = asapplePath
 	if asapplePath == "" {
-		hints = append(hints, "asapple not found — rebuild the AgentScope.app bundle")
+		hints = append(hints, "asapple not found — rebuild the OpenScope.app bundle")
 	} else {
 		report.AsappleSigned = checkSigned(asapplePath)
 		if !report.AsappleSigned {
-			hints = append(hints, "asapple is not code-signed — rebuild the AgentScope.app bundle from Xcode")
+			hints = append(hints, "asapple is not code-signed — rebuild the OpenScope.app bundle from Xcode")
 		}
 	}
 
 	// Notes Automation permission — probe with a minimal AppleScript
 	report.NotesAccess = checkNotesAccess(asapplePath)
 	if !report.NotesAccess.OK {
-		hints = append(hints, "Notes access denied — run: tccutil reset AppleEvents com.ezblock.agentscope && open /Applications/AgentScope.app")
+		hints = append(hints, "Notes access denied — run: tccutil reset AppleEvents com.ezblock.openscope && open /Applications/OpenScope.app")
 		hints = append(hints, "then re-run any Notes action to trigger the macOS approval prompt")
 	}
 
@@ -83,16 +83,16 @@ func checkSocket(socketPath string) bool {
 }
 
 func findAsapple() string {
-	// Prefer binary next to the running ascoped inside an app bundle
+	// Prefer binary next to the running openscoped inside an app bundle
 	exePath, err := os.Executable()
 	if err == nil {
-		candidate := exePath[:len(exePath)-len("ascope")] + "asapple"
+		candidate := exePath[:len(exePath)-len("openscope")] + "asapple"
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
 	}
 	// Fall back to app bundle location
-	bundlePath := "/Applications/AgentScope.app/Contents/Resources/bin/asapple"
+	bundlePath := "/Applications/OpenScope.app/Contents/Resources/bin/asapple"
 	if _, err := os.Stat(bundlePath); err == nil {
 		return bundlePath
 	}

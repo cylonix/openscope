@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/agentscope/ascope/cli"
+	"github.com/openscope/openscope/cli"
 )
 
 func main() {

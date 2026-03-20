@@ -9,16 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentscope/ascope/agent"
-	"github.com/agentscope/ascope/appdef"
-	"github.com/agentscope/ascope/audit"
-	"github.com/agentscope/ascope/config"
-	"github.com/agentscope/ascope/executor"
-	appleexec "github.com/agentscope/ascope/executor/applescript"
-	"github.com/agentscope/ascope/ipc"
-	"github.com/agentscope/ascope/output"
-	"github.com/agentscope/ascope/policy"
-	"github.com/agentscope/ascope/resources"
+	"github.com/openscope/openscope/agent"
+	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/audit"
+	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/executor"
+	appleexec "github.com/openscope/openscope/executor/applescript"
+	"github.com/openscope/openscope/ipc"
+	"github.com/openscope/openscope/output"
+	"github.com/openscope/openscope/policy"
+	"github.com/openscope/openscope/resources"
 )
 
 const (

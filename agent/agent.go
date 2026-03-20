@@ -10,7 +10,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/agentscope/ascope/config"
+	"github.com/openscope/openscope/config"
 	"gopkg.in/yaml.v3"
 )
 

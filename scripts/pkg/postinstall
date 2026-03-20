@@ -2,16 +2,16 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# postinstall — runs as root after AgentScope.app is copied to /Applications
+# postinstall — runs as root after OpenScope.app is copied to /Applications
 # Sets up per-user LaunchAgent and CLI symlink for the current console user.
 
 set -euo pipefail
 
-APP="/Applications/AgentScope.app"
-PLIST_NAME="com.ezblock.agentscope.ascoped.plist"
+APP="/Applications/OpenScope.app"
+PLIST_NAME="com.ezblock.openscope.openscoped.plist"
 PLIST_SRC="$APP/Contents/Resources/launchd/$PLIST_NAME"
-CLI_SRC="$APP/Contents/Resources/bin/ascope"
-CLI_LINK="/usr/local/bin/ascope"
+CLI_SRC="$APP/Contents/Resources/bin/openscope"
+CLI_LINK="/usr/local/bin/openscope"
 
 # ── Find the console user ────────────────────────────────────────────────────
 # PKG postinstall runs as root. We need the human user who is logged in.
@@ -27,9 +27,9 @@ CONSOLE_UID=$(id -u "$CONSOLE_USER")
 USER_HOME=$(eval echo "~$CONSOLE_USER")
 LAUNCH_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
 PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_NAME"
-CONFIG_DIR="$USER_HOME/.agentscope"
+CONFIG_DIR="$USER_HOME/.openscope"
 
-echo "postinstall: setting up AgentScope for user $CONSOLE_USER (uid $CONSOLE_UID)"
+echo "postinstall: setting up OpenScope for user $CONSOLE_USER (uid $CONSOLE_UID)"
 
 # ── CLI symlink ──────────────────────────────────────────────────────────────
 mkdir -p /usr/local/bin
@@ -97,11 +97,11 @@ EOF
 fi
 
 # ── Open the app to trigger the macOS Notes Automation permission prompt ─────
-# ascoped runs as a background LaunchAgent and cannot show TCC prompts.
-# Opening AgentScope.app puts it in the foreground so macOS can display
-# the "AgentScope wants to control Notes" approval dialog.
+# openscoped runs as a background LaunchAgent and cannot show TCC prompts.
+# Opening OpenScope.app puts it in the foreground so macOS can display
+# the "OpenScope wants to control Notes" approval dialog.
 launchctl asuser "$CONSOLE_UID" /usr/bin/open "$APP"
-echo "postinstall: opened AgentScope.app to trigger Notes permission prompt"
+echo "postinstall: opened OpenScope.app to trigger Notes permission prompt"
 
 echo "postinstall: done"
 exit 0

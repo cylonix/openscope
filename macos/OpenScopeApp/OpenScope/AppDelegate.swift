@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requestNotesAutomationPermission() {
         // This call blocks the main thread until the user responds to the
-        // macOS "AgentScope wants to control Notes" prompt (or immediately
+        // macOS "OpenScope wants to control Notes" prompt (or immediately
         // returns if permission was already granted or denied).
         guard let script = NSAppleScript(source: "tell application \"Notes\" to return") else { return }
         var error: NSDictionary?
@@ -33,16 +33,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launchAscopedIfNeeded() {
         guard let resourcePath = Bundle.main.resourcePath else {
-            NSLog("AgentScope: missing bundle resource path")
+            NSLog("OpenScope: missing bundle resource path")
             return
         }
 
         let binaryURL = URL(fileURLWithPath: resourcePath)
             .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("ascoped", isDirectory: false)
+            .appendingPathComponent("openscoped", isDirectory: false)
 
         guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
-            NSLog("AgentScope: ascoped not found at %@", binaryURL.path)
+            NSLog("OpenScope: openscoped not found at %@", binaryURL.path)
             return
         }
 
@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try process.run()
         } catch {
-            NSLog("AgentScope: failed to launch ascoped: %@", error.localizedDescription)
+            NSLog("OpenScope: failed to launch openscoped: %@", error.localizedDescription)
         }
     }
 }

@@ -6,7 +6,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/agentscope/ascope/appdef"
+	"github.com/openscope/openscope/appdef"
 )
 
 func TestEvaluateDenyOverridesAllow(t *testing.T) {

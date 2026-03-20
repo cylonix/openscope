@@ -2,10 +2,10 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# scripts/pilot_test.sh — AgentScope pilot test suite
+# scripts/pilot_test.sh — OpenScope pilot test suite
 #
 # Tests the live installed system end-to-end and prints a structured report.
-# Requires AgentScope to be installed and the daemon running.
+# Requires OpenScope to be installed and the daemon running.
 # Run with: bash scripts/pilot_test.sh [--folder <name>] [--note <title>]
 #
 # Options:
@@ -73,7 +73,7 @@ run_test() {  # name expect_exit cmd [args...]
 }
 
 # ── header ─────────────────────────────────────────────────────────────────────
-printf "\n${BOLD}AgentScope Pilot Test Suite${RESET}\n"
+printf "\n${BOLD}OpenScope Pilot Test Suite${RESET}\n"
 printf '%0.s─' {1..60}; printf '\n'
 printf "  Agent : %s\n" "$AGENT"
 [ -n "$TEST_FOLDER" ] && printf "  Folder: %s\n" "$TEST_FOLDER" || true
@@ -84,18 +84,18 @@ printf '%0.s─' {1..60}; printf '\n\n'
 printf "${BOLD}1. Installation${RESET}\n"
 
 # 1.1 CLI in PATH
-if command -v ascope >/dev/null 2>&1; then
-  CLI_PATH=$(command -v ascope)
+if command -v openscope >/dev/null 2>&1; then
+  CLI_PATH=$(command -v openscope)
   record PASS "CLI in PATH" "$CLI_PATH"
   print_status PASS "CLI in PATH" "$CLI_PATH"
   show_evidence "$(ls -la "$CLI_PATH")"
 else
-  record FAIL "CLI in PATH" "ascope not found — is /usr/local/bin in PATH?"
-  print_status FAIL "CLI in PATH" "ascope not found"
+  record FAIL "CLI in PATH" "openscope not found — is /usr/local/bin in PATH?"
+  print_status FAIL "CLI in PATH" "openscope not found"
 fi
 
 # 1.2 App bundle installed
-APP="/Applications/AgentScope.app"
+APP="/Applications/OpenScope.app"
 if [ -d "$APP" ]; then
   APP_VER=$(defaults read "$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "?")
   record PASS "App bundle installed" "v$APP_VER"
@@ -112,12 +112,12 @@ ASAPPLE="$APP/Contents/Resources/bin/asapple"
 if [ -x "$ASAPPLE" ]; then
   ASAPPLE_SIGN=$(codesign -dv "$ASAPPLE" 2>&1)
   ASAPPLE_ID=$(echo "$ASAPPLE_SIGN" | grep '^Identifier=' | cut -d= -f2 || echo "?")
-  if [ "$ASAPPLE_ID" = "com.ezblock.agentscope" ]; then
+  if [ "$ASAPPLE_ID" = "com.ezblock.openscope" ]; then
     record PASS "asapple bundle ID" "$ASAPPLE_ID"
     print_status PASS "asapple bundle ID" "$ASAPPLE_ID"
     show_evidence "$(echo "$ASAPPLE_SIGN" | grep -E '^(Identifier|TeamIdentifier|Format|flags)')"
   else
-    record FAIL "asapple bundle ID" "got '$ASAPPLE_ID', want com.ezblock.agentscope"
+    record FAIL "asapple bundle ID" "got '$ASAPPLE_ID', want com.ezblock.openscope"
     print_status FAIL "asapple bundle ID" "got '$ASAPPLE_ID'"
     show_evidence "$ASAPPLE_SIGN"
   fi
@@ -127,9 +127,9 @@ else
 fi
 
 # 1.4 LaunchAgent plist installed and loaded
-PLIST="$HOME/Library/LaunchAgents/com.ezblock.agentscope.ascoped.plist"
+PLIST="$HOME/Library/LaunchAgents/com.ezblock.openscope.openscoped.plist"
 if [ -f "$PLIST" ]; then
-  LC_STATUS=$(launchctl list 2>/dev/null | grep "com.ezblock.agentscope.ascoped" 2>/dev/null || echo "(not listed by launchctl)")
+  LC_STATUS=$(launchctl list 2>/dev/null | grep "com.ezblock.openscope.openscoped" 2>/dev/null || echo "(not listed by launchctl)")
   record PASS "LaunchAgent plist" "installed"
   print_status PASS "LaunchAgent plist" "$PLIST"
   show_evidence "launchctl: $LC_STATUS"
@@ -143,8 +143,8 @@ printf '\n'
 # ══════════════════════════════════════════════════════════════════════════════
 printf "${BOLD}2. Daemon Health${RESET}\n"
 
-# 2.1 ascope status
-STATUS_JSON=$(ascope status 2>&1 || true)
+# 2.1 openscope status
+STATUS_JSON=$(openscope status 2>&1 || true)
 DAEMON_RUNNING=$(json_extract "$STATUS_JSON" "print(d.get('daemon',{}).get('running','false'))")
 
 if [ "$DAEMON_RUNNING" = "True" ] || [ "$DAEMON_RUNNING" = "true" ]; then
@@ -161,8 +161,8 @@ else
   show_evidence "$STATUS_JSON"
 fi
 
-# 2.2 ascope doctor
-DOCTOR_OUT=$(ascope doctor 2>&1 || true)
+# 2.2 openscope doctor
+DOCTOR_OUT=$(openscope doctor 2>&1 || true)
 DOCTOR_OK=$(json_extract "$DOCTOR_OUT" "print(str(d.get('ok',False)).lower())")
 if [ "$DOCTOR_OK" = "true" ]; then
   record PASS "Doctor checks" "all OK"
@@ -188,7 +188,7 @@ printf '\n'
 # ══════════════════════════════════════════════════════════════════════════════
 printf "${BOLD}3. Configuration${RESET}\n"
 
-CONFIG="$HOME/.agentscope"
+CONFIG="$HOME/.openscope"
 
 # 3.1 Demo agent registered
 AGENTS_FILE="$CONFIG/agents.yaml"
@@ -253,7 +253,7 @@ if [ "$AE_EXIT" = "0" ]; then
 TCC entries for Notes: ${TCC_ENTRY:-none found}"
 else
   record FAIL "Notes Automation permission" "denied"
-  print_status FAIL "Notes Automation permission" "denied — open /Applications/AgentScope.app"
+  print_status FAIL "Notes Automation permission" "denied — open /Applications/OpenScope.app"
   show_evidence "$(echo "$AE_RAW" | grep -v "EXIT:")"
 fi
 
@@ -263,7 +263,7 @@ printf '\n'
 printf "${BOLD}4. Notes Actions  (agent: $AGENT)${RESET}\n"
 
 # 4.1 list_folders
-if run_test "list_folders" 0 ascope notes list_folders --agent "$AGENT"; then
+if run_test "list_folders" 0 openscope notes list_folders --agent "$AGENT"; then
   FOLDERS=$(json_extract "$TEST_OUTPUT" "print('\n'.join(d.get('data',[])))")
   FOLDER_COUNT=$(echo "$FOLDERS" | grep -c . 2>/dev/null || echo 0)
   record PASS "notes list_folders" "$FOLDER_COUNT folder(s)"
@@ -281,7 +281,7 @@ fi
 
 # 4.2 list_notes
 if [ -n "$TEST_FOLDER" ]; then
-  if run_test "list_notes" 0 ascope notes list_notes --agent "$AGENT" --folder "$TEST_FOLDER"; then
+  if run_test "list_notes" 0 openscope notes list_notes --agent "$AGENT" --folder "$TEST_FOLDER"; then
     NOTE_TITLES=$(json_extract "$TEST_OUTPUT" "
 notes=d.get('data',[])
 for n in notes[:8]:
@@ -310,7 +310,7 @@ fi
 
 # 4.3 read_note
 if [ -n "$TEST_FOLDER" ] && [ -n "$TEST_NOTE" ]; then
-  if run_test "read_note" 0 ascope notes read_note --agent "$AGENT" \
+  if run_test "read_note" 0 openscope notes read_note --agent "$AGENT" \
       --folder "$TEST_FOLDER" --note "$TEST_NOTE"; then
     NOTE_META=$(json_extract "$TEST_OUTPUT" "
 data=d.get('data',{})
@@ -342,7 +342,7 @@ printf "${BOLD}5. Policy Enforcement${RESET}\n"
 
 # 5.1 Unregistered agent rejected
 RANDOM_AGENT="pilot_test_agent_$$"
-if run_test "Unregistered agent rejected" 1 ascope notes list_folders --agent "$RANDOM_AGENT"; then
+if run_test "Unregistered agent rejected" 1 openscope notes list_folders --agent "$RANDOM_AGENT"; then
   # CLI returns plain text for these errors, not JSON
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
   record PASS "Unregistered agent rejected" "$ERR_MSG"
@@ -355,7 +355,7 @@ else
 fi
 
 # 5.2 Unknown app rejected
-if run_test "Unknown app rejected" 1 ascope nonexistentapp someaction --agent "$AGENT"; then
+if run_test "Unknown app rejected" 1 openscope nonexistentapp someaction --agent "$AGENT"; then
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
   record PASS "Unknown app rejected" "$ERR_MSG"
   print_status PASS "Unknown app rejected" "$ERR_MSG"
@@ -369,16 +369,16 @@ fi
 # 5.3 Policy deny: backup → add deny → test → restore
 DENY_TEST_FOLDER="__pilot_deny_test_$$__"
 POLICY_BACKUP=$(mktemp)
-cp "$HOME/.agentscope/policies.yaml" "$POLICY_BACKUP"
+cp "$HOME/.openscope/policies.yaml" "$POLICY_BACKUP"
 
-ascope policy deny --agent "$AGENT" --app notes --action list_notes \
+openscope policy deny --agent "$AGENT" --app notes --action list_notes \
   --folder "$DENY_TEST_FOLDER" >/dev/null 2>&1 || true
 
 DENY_OUTPUT=""
 DENY_EC=0
-DENY_OUTPUT=$(ascope notes list_notes --agent "$AGENT" --folder "$DENY_TEST_FOLDER" 2>&1) || DENY_EC=$?
+DENY_OUTPUT=$(openscope notes list_notes --agent "$AGENT" --folder "$DENY_TEST_FOLDER" 2>&1) || DENY_EC=$?
 
-mv "$POLICY_BACKUP" "$HOME/.agentscope/policies.yaml"
+mv "$POLICY_BACKUP" "$HOME/.openscope/policies.yaml"
 
 if [ "$DENY_EC" -ne 0 ]; then
   DENY_MSG=$(json_extract "$DENY_OUTPUT" "print(d.get('error',d))" 2>/dev/null || echo "$DENY_OUTPUT")
@@ -397,7 +397,7 @@ printf '\n'
 # ══════════════════════════════════════════════════════════════════════════════
 printf "${BOLD}6. Audit Log${RESET}\n"
 
-AUDIT_FILE="$HOME/.agentscope/audit.jsonl"
+AUDIT_FILE="$HOME/.openscope/audit.jsonl"
 if [ -f "$AUDIT_FILE" ] && [ -s "$AUDIT_FILE" ]; then
   ENTRY_COUNT=$(wc -l < "$AUDIT_FILE" | tr -d ' ')
   record PASS "Audit log written" "$ENTRY_COUNT entries"

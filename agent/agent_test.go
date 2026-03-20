@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/agentscope/ascope/config"
+	"github.com/openscope/openscope/config"
 )
 
 func TestRegister(t *testing.T) {

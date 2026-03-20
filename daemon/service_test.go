@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/agentscope/ascope/appdef"
-	"github.com/agentscope/ascope/config"
-	"github.com/agentscope/ascope/executor"
-	"github.com/agentscope/ascope/ipc"
+	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/executor"
+	"github.com/openscope/openscope/ipc"
 )
 
 type stubExecutor struct {
@@ -26,15 +26,15 @@ func (s stubExecutor) Run(def appdef.Definition, actionName string, params map[s
 func TestServiceHandleAllowedRequest(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{
-		ConfigDir:       filepath.Join(home, ".agentscope"),
-		AppsDir:         filepath.Join(home, ".agentscope", "apps.d"),
-		RunDir:          filepath.Join(home, ".agentscope", "run"),
-		StateDir:        filepath.Join(home, ".agentscope", "state"),
-		PoliciesFile:    filepath.Join(home, ".agentscope", "policies.yaml"),
-		AgentsFile:      filepath.Join(home, ".agentscope", "agents.yaml"),
-		AuditFile:       filepath.Join(home, ".agentscope", "audit.jsonl"),
-		EnabledAppsFile: filepath.Join(home, ".agentscope", "state", "enabled_apps.yaml"),
-		SocketPath:      filepath.Join(home, ".agentscope", "run", "ascoped.sock"),
+		ConfigDir:       filepath.Join(home, ".openscope"),
+		AppsDir:         filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:          filepath.Join(home, ".openscope", "run"),
+		StateDir:        filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:    filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:      filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:       filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile: filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:      filepath.Join(home, ".openscope", "run", "openscoped.sock"),
 	}
 	if err := config.EnsureLayout(paths); err != nil {
 		t.Fatalf("EnsureLayout returned error: %v", err)

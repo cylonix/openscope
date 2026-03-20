@@ -5,7 +5,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct AgentScopeApp: App {
+struct OpenScopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {

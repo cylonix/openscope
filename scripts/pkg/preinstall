@@ -2,12 +2,12 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# preinstall — runs as root before AgentScope.app is installed.
-# Unloads any running ascoped LaunchAgent to avoid conflicts during upgrade.
+# preinstall — runs as root before OpenScope.app is installed.
+# Unloads any running openscoped LaunchAgent to avoid conflicts during upgrade.
 
 set -euo pipefail
 
-PLIST_LABEL="com.ezblock.agentscope.ascoped"
+PLIST_LABEL="com.ezblock.openscope.openscoped"
 
 CONSOLE_USER=$( scutil <<< "show State:/Users/ConsoleUser" \
   | awk '/Name :/ && !/loginwindow/ { print $3; exit }' )
@@ -20,6 +20,6 @@ CONSOLE_UID=$(id -u "$CONSOLE_USER")
 
 # Gracefully stop the daemon if it is running
 launchctl bootout "gui/$CONSOLE_UID/$PLIST_LABEL" 2>/dev/null || true
-echo "preinstall: stopped existing ascoped (if running)"
+echo "preinstall: stopped existing openscoped (if running)"
 
 exit 0

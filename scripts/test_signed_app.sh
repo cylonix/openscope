@@ -8,30 +8,30 @@ set -eu
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/test_signed_app.sh [/path/to/AgentScope.app] [folder] [note]
+  scripts/test_signed_app.sh [/path/to/OpenScope.app] [folder] [note]
 
 Examples:
   scripts/test_signed_app.sh
-  scripts/test_signed_app.sh "/Applications/AgentScope.app"
-  scripts/test_signed_app.sh "/Applications/AgentScope.app" Work "Sprint Plan"
+  scripts/test_signed_app.sh "/Applications/OpenScope.app"
+  scripts/test_signed_app.sh "/Applications/OpenScope.app" Work "Sprint Plan"
 
 What it does:
   1. Creates an isolated temporary HOME
   2. Seeds a test agent and policy under that HOME
-  3. Launches the signed AgentScope app bundle
-  4. Waits for ascoped to create its Unix socket
-  5. Runs the bundled ascope client against the live daemon
+  3. Launches the signed OpenScope app bundle
+  4. Waits for openscoped to create its Unix socket
+  5. Runs the bundled openscope client against the live daemon
 
 Notes:
   - This is meant for manual signed-app verification.
   - If you pass folder/note, it will also try a real Notes read.
   - The first Apple Events permission prompt may still appear the first time.
   - If no app path is passed, the script uses:
-      .xcodebuild/Build/Products/Debug/AgentScope.app
+      .xcodebuild/Build/Products/Debug/OpenScope.app
 EOF
 }
 
-DEFAULT_APP_PATH="$(cd "$(dirname "$0")/.." && pwd)/.xcodebuild/Build/Products/Debug/AgentScope.app"
+DEFAULT_APP_PATH="$(cd "$(dirname "$0")/.." && pwd)/.xcodebuild/Build/Products/Debug/OpenScope.app"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
@@ -42,21 +42,21 @@ APP_PATH=${1:-$DEFAULT_APP_PATH}
 FOLDER=${2:-}
 NOTE=${3:-}
 
-APP_EXEC="$APP_PATH/Contents/MacOS/AgentScope"
+APP_EXEC="$APP_PATH/Contents/MacOS/OpenScope"
 BIN_DIR="$APP_PATH/Contents/Resources/bin"
-ASCOPE_BIN="$BIN_DIR/ascope"
-ASCOPED_BIN="$BIN_DIR/ascoped"
+OPENSCOPE_BIN="$BIN_DIR/openscope"
+OPENSCOPED_BIN="$BIN_DIR/openscoped"
 ASAPPLE_BIN="$BIN_DIR/asapple"
 
-for path in "$APP_EXEC" "$ASCOPE_BIN" "$ASCOPED_BIN" "$ASAPPLE_BIN"; do
+for path in "$APP_EXEC" "$OPENSCOPE_BIN" "$OPENSCOPED_BIN" "$ASAPPLE_BIN"; do
   if [ ! -x "$path" ]; then
     echo "error: required executable not found: $path" >&2
     exit 1
   fi
 done
 
-TEST_HOME=$(mktemp -d /tmp/agentscope-signed-test.XXXXXX)
-CONFIG_DIR="$TEST_HOME/.agentscope"
+TEST_HOME=$(mktemp -d /tmp/openscope-signed-test.XXXXXX)
+CONFIG_DIR="$TEST_HOME/.openscope"
 RUN_DIR="$CONFIG_DIR/run"
 
 cleanup() {
@@ -160,7 +160,7 @@ echo "Launching signed app: $APP_PATH"
 HOME="$TEST_HOME" "$APP_EXEC" >/dev/null 2>&1 &
 APP_PID=$!
 
-SOCKET="$RUN_DIR/ascoped.sock"
+SOCKET="$RUN_DIR/openscoped.sock"
 ATTEMPTS=50
 while [ $ATTEMPTS -gt 0 ]; do
   if [ -S "$SOCKET" ]; then
@@ -171,7 +171,7 @@ while [ $ATTEMPTS -gt 0 ]; do
 done
 
 if [ ! -S "$SOCKET" ]; then
-  echo "error: ascoped socket was not created at $SOCKET" >&2
+  echo "error: openscoped socket was not created at $SOCKET" >&2
   echo "hint: check app signing/build output and launch behavior" >&2
   exit 1
 fi
@@ -182,22 +182,22 @@ ls -l "$SOCKET"
 
 echo
 echo "Running list_folders smoke test"
-HOME="$TEST_HOME" "$ASCOPE_BIN" notes list_folders --agent demo
+HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes list_folders --agent demo
 
 if [ -n "$FOLDER" ]; then
   echo
   echo "Running list_notes smoke test for folder: $FOLDER"
-  HOME="$TEST_HOME" "$ASCOPE_BIN" notes list_notes --agent demo --folder "$FOLDER"
+  HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes list_notes --agent demo --folder "$FOLDER"
 fi
 
 if [ -n "$FOLDER" ] && [ -n "$NOTE" ]; then
   echo
   echo "Running read_note smoke test for folder=$FOLDER note=$NOTE"
-  HOME="$TEST_HOME" "$ASCOPE_BIN" notes read_note --agent demo --folder "$FOLDER" --note "$NOTE"
+  HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes read_note --agent demo --folder "$FOLDER" --note "$NOTE"
 
   echo
   echo "Running body-only smoke test"
-  HOME="$TEST_HOME" "$ASCOPE_BIN" notes read_note --agent demo --folder "$FOLDER" --note "$NOTE" --body-only
+  HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes read_note --agent demo --folder "$FOLDER" --note "$NOTE" --body-only
   printf '\n'
 fi
 
@@ -209,7 +209,7 @@ FAIL=0
 
 expect_deny() {
   label="$1"; shift
-  out=$(HOME="$TEST_HOME" "$ASCOPE_BIN" "$@" 2>&1 || true)
+  out=$(HOME="$TEST_HOME" "$OPENSCOPE_BIN" "$@" 2>&1 || true)
   if echo "$out" | grep -qE '"ok".*false|denied'; then
     echo "  PASS  $label"
     PASS=$((PASS + 1))
@@ -222,7 +222,7 @@ expect_deny() {
 
 expect_allow() {
   label="$1"; shift
-  out=$(HOME="$TEST_HOME" "$ASCOPE_BIN" "$@" 2>&1 || true)
+  out=$(HOME="$TEST_HOME" "$OPENSCOPE_BIN" "$@" 2>&1 || true)
   if echo "$out" | grep -q '"ok".*true'; then
     echo "  PASS  $label"
     PASS=$((PASS + 1))
@@ -256,7 +256,7 @@ printf "Result: %d passed, %d failed\n" "$PASS" "$FAIL"
 
 echo
 echo "── admin reads notes in test-admin ─────────────────────────────────────"
-NOTES_JSON=$(HOME="$TEST_HOME" "$ASCOPE_BIN" notes list_notes --agent admin --folder test-admin 2>&1)
+NOTES_JSON=$(HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes list_notes --agent admin --folder test-admin 2>&1)
 echo "list_notes response:"
 echo "$NOTES_JSON"
 
@@ -275,7 +275,7 @@ else
   echo "$NOTE_NAMES" | while IFS= read -r note_name; do
     echo
     echo "  note: $note_name"
-    HOME="$TEST_HOME" "$ASCOPE_BIN" notes read_note \
+    HOME="$TEST_HOME" "$OPENSCOPE_BIN" notes read_note \
       --agent admin --folder test-admin --note "$note_name" --body-only || true
     printf '\n'
   done
@@ -295,4 +295,4 @@ fi
 
 echo
 echo "Test completed."
-echo "If this was the first Automation request, check whether macOS prompted for AgentScope access to Notes."
+echo "If this was the first Automation request, check whether macOS prompted for OpenScope access to Notes."

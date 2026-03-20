@@ -9,16 +9,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/agentscope/ascope/agent"
-	"github.com/agentscope/ascope/appdef"
-	"github.com/agentscope/ascope/config"
-	"github.com/agentscope/ascope/daemon"
-	"github.com/agentscope/ascope/doctor"
-	"github.com/agentscope/ascope/ipc"
-	"github.com/agentscope/ascope/output"
-	"github.com/agentscope/ascope/policy"
-	"github.com/agentscope/ascope/resources"
-	"github.com/agentscope/ascope/status"
+	"github.com/openscope/openscope/agent"
+	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/daemon"
+	"github.com/openscope/openscope/doctor"
+	"github.com/openscope/openscope/ipc"
+	"github.com/openscope/openscope/output"
+	"github.com/openscope/openscope/policy"
+	"github.com/openscope/openscope/resources"
+	"github.com/openscope/openscope/status"
 )
 
 func Run(args []string) int {
@@ -55,7 +55,7 @@ func Run(args []string) int {
 
 func runApp(paths config.Paths, args []string) int {
 	if len(args) == 0 {
-		output.WriteErrorf("usage: ascope app <list|show|validate|enable|disable>")
+		output.WriteErrorf("usage: openscope app <list|show|validate|enable|disable>")
 		return daemon.ExitInvalid
 	}
 
@@ -84,7 +84,7 @@ func runApp(paths config.Paths, args []string) int {
 		return writeJSON(map[string]any{"apps": apps})
 	case "show":
 		if len(args) < 2 {
-			output.WriteErrorf("usage: ascope app show <app>")
+			output.WriteErrorf("usage: openscope app show <app>")
 			return daemon.ExitInvalid
 		}
 		loaded, err := loadVisibleDefinitions(paths)
@@ -119,13 +119,13 @@ func runApp(paths config.Paths, args []string) int {
 		return writeJSON(map[string]any{"ok": true})
 	case "enable":
 		if len(args) < 2 {
-			output.WriteErrorf("usage: ascope app enable <app>")
+			output.WriteErrorf("usage: openscope app enable <app>")
 			return daemon.ExitInvalid
 		}
 		return setAppEnabled(paths, args[1], true)
 	case "disable":
 		if len(args) < 2 {
-			output.WriteErrorf("usage: ascope app disable <app>")
+			output.WriteErrorf("usage: openscope app disable <app>")
 			return daemon.ExitInvalid
 		}
 		return setAppEnabled(paths, args[1], false)
@@ -137,7 +137,7 @@ func runApp(paths config.Paths, args []string) int {
 
 func runPolicy(paths config.Paths, args []string) int {
 	if len(args) == 0 {
-		output.WriteErrorf("usage: ascope policy <list|show|validate|allow|deny>")
+		output.WriteErrorf("usage: openscope policy <list|show|validate|allow|deny>")
 		return daemon.ExitInvalid
 	}
 
@@ -151,7 +151,7 @@ func runPolicy(paths config.Paths, args []string) int {
 		return writeJSON(pf)
 	case "show":
 		if len(args) < 3 || args[1] != "--agent" {
-			output.WriteErrorf("usage: ascope policy show --agent <agent_id>")
+			output.WriteErrorf("usage: openscope policy show --agent <agent_id>")
 			return daemon.ExitInvalid
 		}
 		pf, err := policy.LoadDefault(paths)
@@ -193,7 +193,7 @@ func runPolicyAddRule(paths config.Paths, effect string, args []string) int {
 	action := flags["action"]
 
 	if agentID == "" || app == "" || action == "" {
-		output.WriteErrorf("usage: ascope policy %s --agent <id> --app <app> --action <action> [--<param> <value> ...]", effect)
+		output.WriteErrorf("usage: openscope policy %s --agent <id> --app <app> --action <action> [--<param> <value> ...]", effect)
 		return daemon.ExitInvalid
 	}
 
@@ -229,14 +229,14 @@ func runPolicyAddRule(paths config.Paths, effect string, args []string) int {
 
 func runAgent(paths config.Paths, args []string) int {
 	if len(args) == 0 {
-		output.WriteErrorf("usage: ascope agent <register|list>")
+		output.WriteErrorf("usage: openscope agent <register|list>")
 		return daemon.ExitInvalid
 	}
 
 	switch args[0] {
 	case "register":
 		if len(args) < 2 {
-			output.WriteErrorf("usage: ascope agent register <agent_id>")
+			output.WriteErrorf("usage: openscope agent register <agent_id>")
 			return daemon.ExitInvalid
 		}
 		registry, created, err := agent.Register(paths, args[1])
@@ -273,7 +273,7 @@ func runDoctor(paths config.Paths) int {
 
 func runProtectedAction(paths config.Paths, args []string) int {
 	if len(args) < 2 {
-		output.WriteErrorf("usage: ascope <app> <action> --agent <agent_id> [flags]")
+		output.WriteErrorf("usage: openscope <app> <action> --agent <agent_id> [flags]")
 		return daemon.ExitInvalid
 	}
 
@@ -471,10 +471,10 @@ func writeJSON(v any) int {
 }
 
 func printUsage() {
-	_, _ = fmt.Fprintln(os.Stderr, "usage: ascope <app> <action> [flags]")
-	_, _ = fmt.Fprintln(os.Stderr, "       ascope app <list|show|validate|enable|disable>")
-	_, _ = fmt.Fprintln(os.Stderr, "       ascope policy <list|show|validate|allow|deny>")
-	_, _ = fmt.Fprintln(os.Stderr, "       ascope agent <register|list>")
-	_, _ = fmt.Fprintln(os.Stderr, "       ascope status")
-	_, _ = fmt.Fprintln(os.Stderr, "       ascope doctor")
+	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable>")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope status")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope doctor")
 }

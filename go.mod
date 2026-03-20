@@ -1,4 +1,4 @@
-module github.com/agentscope/ascope
+module github.com/openscope/openscope
 
 go 1.24.0
 

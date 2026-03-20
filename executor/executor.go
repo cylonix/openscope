@@ -3,7 +3,7 @@
 
 package executor
 
-import "github.com/agentscope/ascope/appdef"
+import "github.com/openscope/openscope/appdef"
 
 type Result struct {
 	Stdout   string
