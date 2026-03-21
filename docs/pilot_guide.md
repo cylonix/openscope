@@ -1,8 +1,8 @@
 # OpenScope Pilot Guide
 
 OpenScope is a local application access broker for AI agents. It lets authorized agents
-access protected apps (like Apple Notes) via a policy-enforced, audited channel — without
-repeated macOS automation permission prompts.
+access protected apps such as Apple Notes and Apple Mail via a policy-enforced,
+audited channel — without repeated macOS automation permission prompts.
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ repeated macOS automation permission prompts.
 AI agent
   -> openscope CLI          (thin client, invoked per request)
   -> openscoped daemon      (signed background process, holds macOS automation approval)
-  -> Apple Notes         (via in-process AppleScript)
+  -> Apple Notes / Apple Mail   (via in-process AppleScript)
 ```
 
 - `openscope` — CLI wrapper that sends requests to the daemon
@@ -45,17 +45,18 @@ openscope init --force
 
 ### Granting macOS Automation Permission
 
-The first time `openscoped` accesses Apple Notes, macOS will show a one-time prompt.
-Accept it. You can also pre-grant via:
+The first time `openscoped` accesses Apple Notes or Apple Mail, macOS may show a
+one-time prompt. Accept it. You can also pre-grant via:
 
-**System Settings → Privacy & Security → Automation → OpenScope → Notes ✓**
+**System Settings → Privacy & Security → Automation → OpenScope → Notes ✓ / Mail ✓**
 
 ---
 
 ## Quick Start
 
-The installer creates an `openclaw` agent with default note list/read access but
-without `list_folders`. Run these
+The installer creates an `openclaw` agent with default scoped access to Notes and
+Mail. For Notes, it has note list/read access but not `list_folders`. For Mail,
+it has read-only `Inbox` access. Run these
 immediately after install to confirm everything works:
 
 ```bash
@@ -67,6 +68,12 @@ openscope notes read_note --agent openclaw --folder Work --note "My Note"
 
 # Read just the body (plain text)
 openscope notes read_note --agent openclaw --folder Work --note "My Note" --body-only
+
+# List up to 20 unread Inbox messages
+openscope mail list_messages --agent openclaw --mailbox Inbox --limit 20 --unread true
+
+# Read one Inbox message
+openscope mail read_message --agent openclaw --mailbox Inbox --id "<message-id>" --body-only
 ```
 
 ---
@@ -189,6 +196,36 @@ Body-only mode (plain text, useful for piping into other tools):
 openscope notes read_note --agent <agent-id> --folder Work --note "Weekly Notes" --body-only
 ```
 
+## Apple Mail Actions Reference
+
+### `list_messages`
+
+List messages in a mailbox. The default `openclaw` policy allows this only for
+`Inbox`.
+
+```bash
+openscope mail list_messages --agent <agent-id> --mailbox Inbox --limit 20 --unread true
+```
+
+```json
+{"ok": true, ..., "data": [{"id": "...", "subject": "...", "sender": "...", "unread": true}]}
+```
+
+### `read_message`
+
+Read a message body by message id. The default `openclaw` policy allows this only
+for `Inbox`.
+
+```bash
+openscope mail read_message --agent <agent-id> --mailbox Inbox --id "<message-id>"
+```
+
+Body-only mode:
+
+```bash
+openscope mail read_message --agent <agent-id> --mailbox Inbox --id "<message-id>" --body-only
+```
+
 ---
 
 ## Checking Status
@@ -248,7 +285,7 @@ tail -5 ~/.openscope/audit.jsonl
 ### macOS Automation permission missing
 
 - Ensure `OpenScope.app` is in `/Applications` (signed copy, not a dev build).
-- Open **System Settings → Privacy & Security → Automation**, find OpenScope, enable Notes.
+- Open **System Settings → Privacy & Security → Automation**, find OpenScope, enable Notes and Mail.
 
 ### `daemon unavailable` error
 

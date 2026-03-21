@@ -12,7 +12,7 @@ The correct macOS runtime shape for OpenScope is:
 - policy enforcement and audit logging in `openscoped`
 - Apple app automation performed by `openscoped`
 
-The first protected app is Apple Notes.
+The first bundled protected apps are Apple Notes and Apple Mail.
 
 The first automation backend should preserve the YAML-driven action model while executing AppleScript in-process from the signed broker, not by spawning `/usr/bin/osascript`.
 
@@ -48,12 +48,12 @@ Actual execution flow:
 
 `openscoped` is not only an architectural convenience.
 
-It is the stable signed app identity that should hold macOS Automation approval for controlling Apple Notes.
+It is the stable signed app identity that should hold macOS Automation approval for controlling Apple Notes and Apple Mail.
 
 That is how OpenScope can support the intended experience:
 
 - AI agent approves use of `openscope`
-- macOS approves `openscoped` automating Notes
+- macOS approves `openscoped` automating Notes and Mail
 - policy is enforced without repeated per-invocation user prompts
 
 ## Goals
@@ -312,7 +312,7 @@ AppleScript keeps the system user-extensible:
 
 - YAML can still point to script content or script resources
 - new protected apps can be added without shipping a new Go binary
-- Notes is just the first bundled integration
+- Notes and Mail are the first bundled integrations
 
 ### Why Avoid `/usr/bin/osascript`
 
@@ -512,11 +512,11 @@ resources
 - execute AppleScript in-process
 - normalize results to JSON or text
 
-### Milestone 6: Protected Notes Flow
+### Milestone 6: Protected Notes And Mail Flow
 
-- bundle Apple Notes app definition
-- bundle Notes scripts
-- support `list_folders`, `list_notes`, `read_note`
+- bundle Apple Notes and Apple Mail app definitions
+- bundle Notes and Mail scripts
+- support scoped default actions for both apps
 - verify policy-enforced end-to-end flow
 
 ### Milestone 7: Diagnostics And Packaging

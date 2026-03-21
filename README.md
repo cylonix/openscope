@@ -1,8 +1,9 @@
 # OpenScope
 
 OpenScope is a local application access broker for AI agents on macOS. It lets
-authorized agents access protected apps — starting with Apple Notes — through a
-policy-enforced, audited channel, without repeated macOS automation prompts.
+authorized agents access protected apps such as Apple Notes and Apple Mail
+through a policy-enforced, audited channel, without repeated macOS automation
+prompts.
 
 ## Architecture
 
@@ -11,7 +12,7 @@ AI agent
   → openscope CLI          (thin client, one invocation per request)
   → openscoped daemon      (signed background process, holds macOS Automation approval)
   → asapple helper      (Swift binary that executes AppleScript in-process)
-  → Apple Notes
+  → Apple Notes / Apple Mail
 ```
 
 - **`openscope`** — CLI wrapper that sends requests to the daemon over a Unix socket
@@ -45,7 +46,7 @@ scripts/build_pkg.sh --version 0.1.0   # produces dist/OpenScope-0.1.0.pkg
 ## Quick Start
 
 After installing the `.pkg`, an `openclaw` agent is pre-registered with default
-Notes access:
+scoped access to Apple Notes and Apple Mail:
 
 ```bash
 # Verify the daemon is running
@@ -168,10 +169,10 @@ Bundled apps (like `notes`) are always enabled and live in [`resources/bundled/`
 
 ## macOS Automation Permission
 
-The first time `openscoped` accesses Apple Notes, macOS shows a one-time permission
-prompt. Accept it, or pre-grant via:
+The first time `openscoped` accesses Apple Notes or Apple Mail, macOS may show a
+one-time Automation prompt. Accept it, or pre-grant via:
 
-**System Settings → Privacy & Security → Automation → OpenScope → Notes ✓**
+**System Settings → Privacy & Security → Automation → OpenScope → Notes ✓ / Mail ✓**
 
 ## Exit Codes
 
@@ -213,7 +214,9 @@ managed and distributed to devices rather than created ad hoc on each machine.
 
 For Notes, a practical default is to name sensitive folders with `Private` or
 `Hidden`, or add more protected keywords with
-`sudo openscope notes blacklist add <keyword>`.
+`sudo openscope notes blacklist add <keyword>`. For Mail, keep the default
+scope to `Inbox` and optionally add sender-domain restrictions with
+`sudo openscope mail domains add <domain>`.
 
 ## License
 

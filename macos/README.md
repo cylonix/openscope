@@ -21,7 +21,7 @@ AI agent
   -> /usr/local/bin/openscope
   -> ~/.openscope/run/openscoped.sock
   -> openscoped (bundled helper, signed)
-  -> Apple Notes automation
+  -> Apple Notes / Apple Mail automation
 ```
 
 ## Xcode Targets

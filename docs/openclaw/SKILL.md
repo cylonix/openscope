@@ -5,7 +5,7 @@ Use OpenScope (`openscope`) whenever you need protected access to local macOS ap
 ## Purpose
 
 OpenScope is the approved path for OpenClaw to access sensitive local applications
-such as Apple Notes. It gives the user a stable security boundary:
+such as Apple Notes and Apple Mail. It gives the user a stable security boundary:
 
 - the OpenClaw agent has a named identity
 - access is limited by allow/deny policy
@@ -18,7 +18,7 @@ it to use.
 
 ## Current Scope
 
-Today, the bundled protected app is Apple Notes.
+Today, the bundled protected apps are Apple Notes and Apple Mail.
 
 Use the same pattern for future bundled apps such as Calendar when they are added,
 or for user-defined apps that the user has installed and enabled.
@@ -50,6 +50,18 @@ Read only the note body as plain text:
 
 ```bash
 openscope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" --body-only
+```
+
+List unread Inbox messages:
+
+```bash
+openscope mail list_messages --agent openclaw --mailbox "Inbox" --limit 20 --unread true
+```
+
+Read one Inbox message as plain text:
+
+```bash
+openscope mail read_message --agent openclaw --mailbox "Inbox" --id "<message-id>" --body-only
 ```
 
 ## Safe Workflow

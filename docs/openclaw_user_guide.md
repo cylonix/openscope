@@ -41,10 +41,10 @@ secret API key.
 
 ## What Works Today
 
-Today, the bundled protected app in this repository is Apple Notes.
+Today, OpenScope includes bundled protected access to Apple Notes and Apple Mail.
 
 That means a novice user can use OpenScope right now to secure OpenClaw's access
-to Notes and Apple Mail.
+to both apps out of the box.
 
 For apps such as Calendar and other critical local applications, the same security
 model applies, but they need to exist as bundled or user-defined OpenScope apps
@@ -145,8 +145,8 @@ Risky setup behavior:
 
 ## First-Time Automation Approval
 
-The first time OpenScope accesses Notes, macOS should show an Automation prompt.
-Approve it for OpenScope.
+The first time OpenScope accesses Notes or Mail, macOS may show an Automation
+prompt. Approve it for OpenScope.
 
 ## How OpenClaw Should Use OpenScope
 
@@ -175,7 +175,8 @@ Use this rule of thumb:
 - start with read-only, narrow permissions
 - widen policy only when you have a real use case
 
-For Notes, this is already available.
+For Notes and Mail, this is already available through the bundled app definitions
+and the default `openclaw` agent.
 
 For Calendar and similar apps, the next step is to add or enable an OpenScope app
 definition for that target, then give `openclaw` a scoped policy for that app.
@@ -187,6 +188,8 @@ definition for that target, then give `openclaw` a scoped policy for that app.
 - do not allow `list_folders`
 - allow `list_notes` only for `Work`
 - allow `read_note` only for `Work`
+- keep Mail scoped to `Inbox`
+- add sender-domain restrictions when you want Mail access narrowed further
 - name sensitive folders with a protected keyword such as `Private` or `Hidden`
 - provision OpenClaw with only one low-permission label such as `openclaw`
 
