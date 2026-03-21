@@ -115,6 +115,22 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 			return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: reason, ExitCode: ExitDenied}
 		}
 	}
+	if entry.Definition.App.Name == "mail" {
+		if keyword, blocked := admin.MatchProtectedFolder(protected, actionContext["mailbox"]); blocked {
+			reason := fmt.Sprintf("mailbox is protected by admin blacklist keyword %q", keyword)
+			s.recordAudit(audit.Event{
+				Timestamp: time.Now().UTC(),
+				Agent:     request.Agent,
+				App:       entry.Definition.App.Name,
+				Action:    request.Action,
+				Params:    actionContext,
+				Decision:  "deny",
+				Result:    "admin_blacklist",
+				Reason:    reason,
+			})
+			return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: reason, ExitCode: ExitDenied}
+		}
+	}
 
 	pf, err := policy.LoadDefaultOrEmpty(s.Paths)
 	if err != nil {
@@ -170,6 +186,21 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: message, ExitCode: ExitExecutorError}
 	}
 
+	filteredOutput, filterErr := s.applyAdminFilters(entry.Definition.App.Name, request.Action, request.Mode, result.Stdout)
+	if filterErr != nil {
+		s.recordAudit(audit.Event{
+			Timestamp: time.Now().UTC(),
+			Agent:     request.Agent,
+			App:       entry.Definition.App.Name,
+			Action:    request.Action,
+			Params:    actionContext,
+			Decision:  "allow",
+			Result:    "admin_filter_error",
+			Reason:    filterErr.Error(),
+		})
+		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: filterErr.Error(), ExitCode: ExitConfigError}
+	}
+
 	s.recordAudit(audit.Event{
 		Timestamp: time.Now().UTC(),
 		Agent:     request.Agent,
@@ -186,7 +217,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		App:      request.App,
 		Action:   request.Action,
 		Agent:    request.Agent,
-		Data:     normalizeOutput(action.Output.Mode, request.Mode, result.Stdout),
+		Data:     filteredOutput,
 		ExitCode: ExitOK,
 	}
 }
@@ -288,6 +319,53 @@ func normalizeOutput(defMode, requestMode, stdout string) any {
 		}
 	}
 	return map[string]any{"raw": stdout}
+}
+
+func (s Service) applyAdminFilters(appName, actionName, requestMode, stdout string) (any, error) {
+	decoded := normalizeOutput("json", requestMode, stdout)
+	if requestMode == "body-only" || appName != "mail" {
+		return decoded, nil
+	}
+
+	filters, err := admin.LoadMailFiltersOrDefault(s.Paths)
+	if err != nil {
+		return nil, fmt.Errorf("load mail filters: %w", err)
+	}
+	if len(filters.AllowedSenderDomains) == 0 {
+		return decoded, nil
+	}
+
+	switch actionName {
+	case "list_messages":
+		items, ok := decoded.([]any)
+		if !ok {
+			return nil, fmt.Errorf("mail list_messages returned unexpected shape")
+		}
+		filtered := make([]any, 0, len(items))
+		for _, item := range items {
+			message, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			sender, _ := message["sender"].(string)
+			if admin.SenderAllowed(filters, sender) {
+				filtered = append(filtered, message)
+			}
+		}
+		return filtered, nil
+	case "read_message":
+		message, ok := decoded.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("mail read_message returned unexpected shape")
+		}
+		sender, _ := message["sender"].(string)
+		if !admin.SenderAllowed(filters, sender) {
+			return nil, fmt.Errorf("sender domain is not allowed by admin mail filters")
+		}
+		return message, nil
+	default:
+		return decoded, nil
+	}
 }
 
 func requireEnabledApp(defs map[string]loadedApp, name string) (loadedApp, error) {

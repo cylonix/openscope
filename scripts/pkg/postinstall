@@ -30,6 +30,7 @@ PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_NAME"
 CONFIG_DIR="$USER_HOME/.openscope"
 ADMIN_DIR="/Library/Application Support/OpenScope"
 PROTECTED_FOLDERS_FILE="$ADMIN_DIR/protected_folders.yaml"
+MAIL_FILTERS_FILE="$ADMIN_DIR/mail_filters.yaml"
 
 echo "postinstall: setting up OpenScope for user $CONSOLE_USER (uid $CONSOLE_UID)"
 
@@ -89,6 +90,18 @@ rules:
       agent: openclaw
       app: notes
       action: read_note
+    - effect: allow
+      agent: openclaw
+      app: mail
+      action: list_messages
+      constraints:
+        mailbox: Inbox
+    - effect: allow
+      agent: openclaw
+      app: mail
+      action: read_message
+      constraints:
+        mailbox: Inbox
 EOF
   chown "$CONSOLE_USER" "$POLICY_FILE"
   echo "postinstall: created default policy (openclaw can list/read notes but not list folders) at $POLICY_FILE"
@@ -104,6 +117,15 @@ keywords:
 EOF
   chmod 644 "$PROTECTED_FOLDERS_FILE"
   echo "postinstall: created protected folder blacklist at $PROTECTED_FOLDERS_FILE"
+fi
+
+if [ ! -f "$MAIL_FILTERS_FILE" ]; then
+  cat > "$MAIL_FILTERS_FILE" <<'EOF'
+version: 1
+allowed_sender_domains: []
+EOF
+  chmod 644 "$MAIL_FILTERS_FILE"
+  echo "postinstall: created mail filters config at $MAIL_FILTERS_FILE"
 fi
 
 # ── Open the app to trigger the macOS Notes Automation permission prompt ─────

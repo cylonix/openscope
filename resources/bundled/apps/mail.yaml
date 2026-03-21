@@ -1,0 +1,43 @@
+version: 1
+app:
+  name: mail
+  display_name: Apple Mail
+  executor: applescript
+  description: Protected read-only access to Apple Mail via AppleScript
+
+actions:
+  list_messages:
+    description: List messages in a mailbox
+    parameters:
+      - name: mailbox
+        type: string
+        required: true
+        policy_key: mailbox
+      - name: limit
+        type: integer
+        required: false
+      - name: unread
+        type: boolean
+        required: false
+    output:
+      mode: json
+      schema: messages
+    script: mail/list_messages.applescript
+
+  read_message:
+    description: Read a message by mailbox and message id
+    parameters:
+      - name: mailbox
+        type: string
+        required: true
+        policy_key: mailbox
+      - name: id
+        type: string
+        required: true
+        policy_key: id
+    output:
+      mode: json
+      schema: message
+      raw_modes:
+        - body-only
+    script: mail/read_message.applescript

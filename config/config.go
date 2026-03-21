@@ -26,6 +26,7 @@ type Paths struct {
 	SocketPath           string
 	AdminDir             string
 	ProtectedFoldersFile string
+	MailFiltersFile      string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -48,6 +49,7 @@ func DefaultPaths() (Paths, error) {
 		SocketPath:           filepath.Join(configDir, "run", "openscoped.sock"),
 		AdminDir:             AdminDir,
 		ProtectedFoldersFile: filepath.Join(AdminDir, "protected_folders.yaml"),
+		MailFiltersFile:      filepath.Join(AdminDir, "mail_filters.yaml"),
 	}, nil
 }
 

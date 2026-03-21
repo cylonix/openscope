@@ -50,6 +50,9 @@ func TestRunInitWritesDefaultConfig(t *testing.T) {
 	if strings.Contains(string(policyData), "list_folders") {
 		t.Fatalf("did not expect list_folders in default policy, got:\n%s", policyData)
 	}
+	if !strings.Contains(string(policyData), "app: mail") || !strings.Contains(string(policyData), "mailbox: Inbox") {
+		t.Fatalf("expected Inbox-only mail defaults in policy, got:\n%s", policyData)
+	}
 }
 
 func TestRunInitRequiresForceToOverwriteExistingConfig(t *testing.T) {

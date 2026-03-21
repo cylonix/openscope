@@ -45,11 +45,14 @@ The PKG runs `scripts/pkg/preinstall` and `scripts/pkg/postinstall` as root:
 4. Starts `openscoped` via `launchctl bootstrap` + `kickstart`
 5. Creates `/usr/local/bin/openscope` symlink
 6. Seeds `~/.openscope/agents.yaml` with an `openclaw` agent and `policies.yaml`
-   with default Notes list/read access when those files do not already exist;
+   with default Notes access plus Mail `Inbox`-only read access when those files
+   do not already exist;
    existing user config is left untouched and can be reset intentionally with
    `openscope init --force`
 7. Seeds `/Library/Application Support/OpenScope/protected_folders.yaml` with
    `private` and `hidden`
+8. Seeds `/Library/Application Support/OpenScope/mail_filters.yaml` with an
+   empty sender-domain allowlist
 
 ## Pilot distribution checklist
 

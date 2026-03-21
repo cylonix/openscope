@@ -41,6 +41,9 @@ func Run(args []string) int {
 	if args[0] == "notes" && len(args) > 1 && args[1] == "blacklist" {
 		return runNotesBlacklist(paths, args[2:])
 	}
+	if args[0] == "mail" && len(args) > 1 && args[1] == "domains" {
+		return runMailDomains(paths, args[2:])
+	}
 
 	switch args[0] {
 	case "init":
@@ -174,6 +177,8 @@ func runInit(paths config.Paths, args []string) int {
 		Rules: []policy.Rule{
 			{Effect: "allow", Agent: "openclaw", App: "notes", Action: "list_notes"},
 			{Effect: "allow", Agent: "openclaw", App: "notes", Action: "read_note"},
+			{Effect: "allow", Agent: "openclaw", App: "mail", Action: "list_messages", Constraints: map[string]string{"mailbox": "Inbox"}},
+			{Effect: "allow", Agent: "openclaw", App: "mail", Action: "read_message", Constraints: map[string]string{"mailbox": "Inbox"}},
 		},
 	}
 	if err := policy.SaveDefault(paths, pf); err != nil {
@@ -347,6 +352,69 @@ func runNotesBlacklist(paths config.Paths, args []string) int {
 		})
 	default:
 		output.WriteErrorf("unknown notes blacklist command %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
+func runMailDomains(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope mail domains <list|add|remove> [domain]")
+		return daemon.ExitInvalid
+	}
+
+	switch args[0] {
+	case "list":
+		filters, err := admin.LoadMailFiltersOrDefault(paths)
+		if err != nil {
+			output.WriteErrorf("load mail filters: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"allowed_sender_domains": filters.AllowedSenderDomains,
+			"source":                 paths.MailFiltersFile,
+		})
+	case "add":
+		if err := requireRootForMutation("mail sender domain changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope mail domains add <domain>")
+			return daemon.ExitInvalid
+		}
+		filters, added, err := admin.AddAllowedSenderDomain(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add mail sender domain: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":                     true,
+			"added":                  added,
+			"allowed_sender_domains": filters.AllowedSenderDomains,
+			"source":                 paths.MailFiltersFile,
+		})
+	case "remove":
+		if err := requireRootForMutation("mail sender domain changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope mail domains remove <domain>")
+			return daemon.ExitInvalid
+		}
+		filters, removed, err := admin.RemoveAllowedSenderDomain(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove mail sender domain: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":                     true,
+			"removed":                removed,
+			"allowed_sender_domains": filters.AllowedSenderDomains,
+			"source":                 paths.MailFiltersFile,
+		})
+	default:
+		output.WriteErrorf("unknown mail domains command %q", args[0])
 		return daemon.ExitInvalid
 	}
 }
@@ -604,6 +672,7 @@ func writeJSON(v any) int {
 func printUsage() {
 	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope init [--force]")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope mail domains <list|add|remove> [domain]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")

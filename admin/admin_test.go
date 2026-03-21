@@ -35,3 +35,17 @@ func TestMatchProtectedFolderIsCaseInsensitiveSubstring(t *testing.T) {
 		t.Fatalf("expected private keyword, got %q", keyword)
 	}
 }
+
+func TestSenderAllowedUsesNormalizedDomainAllowlist(t *testing.T) {
+	filters := MailFilters{
+		Version:              1,
+		AllowedSenderDomains: []string{"mycompany.com"},
+	}
+
+	if !SenderAllowed(filters, "Alice <alice@mycompany.com>") {
+		t.Fatalf("expected sender to be allowed")
+	}
+	if SenderAllowed(filters, "bob@gmail.com") {
+		t.Fatalf("expected sender to be blocked")
+	}
+}

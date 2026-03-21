@@ -44,7 +44,7 @@ secret API key.
 Today, the bundled protected app in this repository is Apple Notes.
 
 That means a novice user can use OpenScope right now to secure OpenClaw's access
-to Notes.
+to Notes and Apple Mail.
 
 For apps such as Calendar and other critical local applications, the same security
 model applies, but they need to exist as bundled or user-defined OpenScope apps
@@ -99,6 +99,9 @@ By default, that label can:
 - read notes inside a folder you name explicitly
 - not enumerate all folders with `list_folders`
 - not access folders whose names contain protected keywords such as `private` or `hidden`
+- list messages only in `Inbox`
+- read messages only in `Inbox`
+- not read attachments through the bundled Mail app
 
 The important practical rule is:
 
@@ -113,6 +116,8 @@ sudo openscope policy allow --agent openclaw --app notes --action list_notes --f
 sudo openscope policy allow --agent openclaw --app notes --action read_note --folder Work
 openscope notes blacklist list
 sudo openscope notes blacklist add finance
+openscope mail domains list
+sudo openscope mail domains add mycompany.com
 ```
 
 This is much better than giving the agent broad unrestricted access.
@@ -150,6 +155,8 @@ OpenClaw should use commands like these:
 ```bash
 openscope notes list_notes --agent openclaw --folder "Work"
 openscope notes read_note --agent openclaw --folder "Work" --note "Sprint Plan" --body-only
+openscope mail list_messages --agent openclaw --mailbox "Inbox" --limit 20 --unread true
+openscope mail read_message --agent openclaw --mailbox "Inbox" --id "<message-id>" --body-only
 ```
 
 The best novice pattern is:

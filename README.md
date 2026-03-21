@@ -59,6 +59,15 @@ openscope notes read_note --agent openclaw --folder Work --note "My Note"
 
 # Read just the body (plain text, suitable for piping)
 openscope notes read_note --agent openclaw --folder Work --note "My Note" --body-only
+
+# List up to 20 unread messages in Inbox
+openscope mail list_messages --agent openclaw --mailbox Inbox --limit 20 --unread true
+
+# Read a message by id
+openscope mail read_message --agent openclaw --mailbox Inbox --id "<message-id>"
+
+# Read just the message body
+openscope mail read_message --agent openclaw --mailbox Inbox --id "<message-id>" --body-only
 ```
 
 ## Commands
@@ -93,6 +102,11 @@ openscope notes blacklist list
 sudo openscope notes blacklist add private
 sudo openscope notes blacklist remove hidden
 
+# Mail sender-domain allowlist
+openscope mail domains list
+sudo openscope mail domains add mycompany.com
+sudo openscope mail domains remove gmail.com
+
 # Diagnostics
 openscope status
 openscope doctor
@@ -119,6 +133,12 @@ OpenScope also enforces a root-owned protected-folder blacklist in
 `/Library/Application Support/OpenScope/protected_folders.yaml`. By default,
 folders whose names contain `private` or `hidden` are denied even if the user
 policy would otherwise allow them.
+
+For Mail, the default `openclaw` policy is read-only and constrained to the
+`Inbox` mailbox. No attachment access is provided in the bundled app, and you can
+optionally restrict readable messages to specific sender domains with
+`/Library/Application Support/OpenScope/mail_filters.yaml` or the
+`openscope mail domains` CLI.
 
 If you want to reset your user-owned OpenScope YAML files to the current app
 defaults, run `openscope init --force`.

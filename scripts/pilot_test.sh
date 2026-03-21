@@ -211,40 +211,52 @@ else
   [ -f "$AGENTS_FILE" ] && show_evidence "$(cat "$AGENTS_FILE")"
 fi
 
-# 3.2 Default Notes policies
+# 3.2 Default user policies
 POLICY_FILE="$CONFIG/policies.yaml"
 if [ -f "$POLICY_FILE" ]; then
   OPENCLAW_ALLOW_COUNT=$(awk '
-    BEGIN { count = 0; has_list_folders = "false"; in_rule = 0; effect = ""; agent = ""; action = "" }
+    BEGIN { count = 0; has_list_folders = "false"; has_mail_inbox = "false"; in_rule = 0; effect = ""; agent = ""; app = ""; action = ""; mailbox = "" }
     /^[[:space:]]*-[[:space:]]effect:/ {
       if (in_rule && agent == "openclaw" && effect == "allow") {
         count++
         if (action == "list_folders") {
           has_list_folders = "true"
         }
+        if (app == "mail" && mailbox == "Inbox") {
+          has_mail_inbox = "true"
+        }
       }
       in_rule = 1
       effect = $NF
       agent = ""
+      app = ""
       action = ""
+      mailbox = ""
       next
     }
     in_rule && /^[[:space:]]*agent:/ { agent = $NF; next }
+    in_rule && /^[[:space:]]*app:/ { app = $NF; next }
     in_rule && /^[[:space:]]*action:/ { action = $NF; next }
+    in_rule && /^[[:space:]]*mailbox:/ { mailbox = $NF; next }
     END {
       if (in_rule && agent == "openclaw" && effect == "allow") {
         count++
         if (action == "list_folders") {
           has_list_folders = "true"
         }
+        if (app == "mail" && mailbox == "Inbox") {
+          has_mail_inbox = "true"
+        }
       }
-      printf "%d|%s\n", count, has_list_folders
+      printf "%d|%s|%s\n", count, has_list_folders, has_mail_inbox
     }
   ' "$POLICY_FILE" 2>/dev/null || echo "0|unknown")
   RULE_COUNT="${OPENCLAW_ALLOW_COUNT%%|*}"
-  HAS_LIST_FOLDERS="${OPENCLAW_ALLOW_COUNT##*|}"
-  if [ "$RULE_COUNT" -ge 2 ] && [ "$HAS_LIST_FOLDERS" = "false" ]; then
-    record PASS "Default policies" "$RULE_COUNT openclaw allow rules; list_folders not allowed"
+  POLICY_TAIL="${OPENCLAW_ALLOW_COUNT#*|}"
+  HAS_LIST_FOLDERS="${POLICY_TAIL%%|*}"
+  HAS_MAIL_INBOX="${OPENCLAW_ALLOW_COUNT##*|}"
+  if [ "$RULE_COUNT" -ge 4 ] && [ "$HAS_LIST_FOLDERS" = "false" ] && [ "$HAS_MAIL_INBOX" = "true" ]; then
+    record PASS "Default policies" "$RULE_COUNT openclaw allow rules; notes + Inbox mail only"
     print_status PASS "Default policies" "$RULE_COUNT openclaw allow rules"
     # Show the allow rules in a compact format
     RULES_SUMMARY=$(python3 -c "
@@ -268,8 +280,8 @@ for b in blocks:
 " 2>/dev/null || grep "effect:\|action:\|agent:" "$POLICY_FILE")
     show_evidence "$RULES_SUMMARY"
   else
-    record FAIL "Default policies" "want openclaw list/read only; got allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS"
-    print_status FAIL "Default policies" "allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS"
+    record FAIL "Default policies" "want notes + Inbox mail only; got allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS mail_inbox=$HAS_MAIL_INBOX"
+    print_status FAIL "Default policies" "allow_count=$RULE_COUNT list_folders=$HAS_LIST_FOLDERS mail_inbox=$HAS_MAIL_INBOX"
     show_evidence "$(cat "$POLICY_FILE")"
   fi
 else
@@ -293,7 +305,17 @@ else
   print_status FAIL "Protected folder blacklist" "file missing"
 fi
 
-# 3.4 Notes Automation permission (TCC)
+MAIL_FILTERS_FILE="/Library/Application Support/OpenScope/mail_filters.yaml"
+if [ -f "$MAIL_FILTERS_FILE" ]; then
+  record PASS "Mail filters config" "$MAIL_FILTERS_FILE"
+  print_status PASS "Mail filters config" "installed"
+  show_evidence "$(cat "$MAIL_FILTERS_FILE")"
+else
+  record FAIL "Mail filters config" "$MAIL_FILTERS_FILE not found"
+  print_status FAIL "Mail filters config" "file missing"
+fi
+
+# 3.5 Notes Automation permission (TCC)
 AE_RAW=$(osascript -e 'tell application "Notes" to return' 2>&1; echo "EXIT:$?")
 AE_EXIT=$(echo "$AE_RAW" | grep "EXIT:" | cut -d: -f2)
 if [ "$AE_EXIT" = "0" ]; then
@@ -411,9 +433,85 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}5. Policy Enforcement${RESET}\n"
+printf "${BOLD}5. Mail Actions  (agent: $AGENT)${RESET}\n"
 
-# 5.1 Unregistered agent rejected
+MAILBOX="Inbox"
+MAIL_MESSAGE_ID=""
+MAILBOX_MISSING=0
+
+if run_test "mail list_messages" 0 openscope mail list_messages --agent "$AGENT" --mailbox "$MAILBOX" --limit 20 --unread true; then
+  MAIL_COUNT=$(json_extract "$TEST_OUTPUT" "print(len(d.get('data',[])))")
+  record PASS "mail list_messages" "mailbox=$MAILBOX  $MAIL_COUNT message(s)"
+  print_status PASS "mail list_messages" "mailbox=$MAILBOX  $MAIL_COUNT message(s)"
+  MAIL_SUMMARY=$(json_extract "$TEST_OUTPUT" "
+messages=d.get('data',[])
+for m in messages[:8]:
+    print(f\"{m.get('id','?')}  {m.get('sender','?')}  {m.get('subject','?')}\")
+if len(messages)>8: print(f'… and {len(messages)-8} more')
+")
+  show_evidence "$MAIL_SUMMARY"
+  MAIL_MESSAGE_ID=$(json_extract "$TEST_OUTPUT" "
+messages=d.get('data',[])
+if messages:
+    print(messages[0].get('id',''))
+")
+else
+  if echo "$TEST_OUTPUT" | grep -qiE "can't get mailbox|can’t get mailbox|unknown mailbox|mailbox .* not found"; then
+    MAILBOX_MISSING=1
+    record PASS "mail list_messages" "Inbox mailbox not configured on this machine"
+    print_status PASS "mail list_messages" "Inbox mailbox not configured"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record FAIL "mail list_messages" "$(echo "$TEST_OUTPUT" | head -1)"
+    print_status FAIL "mail list_messages" "$(echo "$TEST_OUTPUT" | head -1)"
+    show_evidence "$TEST_OUTPUT"
+  fi
+fi
+
+if [ -n "$MAIL_MESSAGE_ID" ]; then
+  if run_test "mail read_message" 0 openscope mail read_message --agent "$AGENT" --mailbox "$MAILBOX" --id "$MAIL_MESSAGE_ID" --body-only; then
+    BODY_LEN=$(printf "%s" "$TEST_OUTPUT" | wc -c | tr -d ' ')
+    record PASS "mail read_message" "id=$MAIL_MESSAGE_ID  body=${BODY_LEN} chars"
+    print_status PASS "mail read_message" "id=$MAIL_MESSAGE_ID  body=${BODY_LEN} chars"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record FAIL "mail read_message" "$(echo "$TEST_OUTPUT" | head -1)"
+    print_status FAIL "mail read_message" "$(echo "$TEST_OUTPUT" | head -1)"
+    show_evidence "$TEST_OUTPUT"
+  fi
+elif [ "$MAILBOX_MISSING" -eq 1 ]; then
+  record SKIP "mail read_message" "Inbox mailbox not configured on this machine"
+  print_status SKIP "mail read_message" "skipped (Inbox mailbox unavailable)"
+else
+  record SKIP "mail read_message" "no unread Inbox messages available"
+  print_status SKIP "mail read_message" "skipped (no unread Inbox messages)"
+fi
+
+if [ "$MAILBOX_MISSING" -eq 1 ]; then
+  record SKIP "mail non-Inbox denied" "Inbox mailbox unavailable; skipping mailbox policy check"
+  print_status SKIP "mail non-Inbox denied" "skipped (Inbox mailbox unavailable)"
+elif run_test "mail non-Inbox denied" 1 openscope mail list_messages --agent "$AGENT" --mailbox "Sent" --limit 5; then
+  if contains_deny_reason "$TEST_OUTPUT" && ! contains_transport_failure "$TEST_OUTPUT"; then
+    record PASS "mail non-Inbox denied" "default agent is Inbox-only"
+    print_status PASS "mail non-Inbox denied" "expected deny"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record FAIL "mail non-Inbox denied" "failed for the wrong reason"
+    print_status FAIL "mail non-Inbox denied" "failed for the wrong reason"
+    show_evidence "$TEST_OUTPUT"
+  fi
+else
+  record FAIL "mail non-Inbox denied" "request unexpectedly succeeded"
+  print_status FAIL "mail non-Inbox denied" "request unexpectedly succeeded"
+  show_evidence "$TEST_OUTPUT"
+fi
+
+printf '\n'
+
+# ══════════════════════════════════════════════════════════════════════════════
+printf "${BOLD}6. Policy Enforcement${RESET}\n"
+
+# 6.1 Unregistered agent rejected
 RANDOM_AGENT="pilot_test_agent_$$"
 if run_test "Unregistered agent rejected" 1 openscope notes list_folders --agent "$RANDOM_AGENT"; then
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
@@ -432,7 +530,7 @@ else
   show_evidence "$TEST_OUTPUT"
 fi
 
-# 5.2 Unknown app rejected
+# 6.2 Unknown app rejected
 if run_test "Unknown app rejected" 1 openscope nonexistentapp someaction --agent "$AGENT"; then
   ERR_MSG=$(echo "$TEST_OUTPUT" | head -1)
   if echo "$TEST_OUTPUT" | grep -qiE "not found|unknown action|unknown app"; then
@@ -450,7 +548,7 @@ else
   show_evidence "$TEST_OUTPUT"
 fi
 
-# 5.3 Admin blacklist overrides broader user policy
+# 6.3 Admin blacklist overrides broader user policy
 BLACKLIST_TEST_FOLDER=$(osascript <<'EOF' 2>/dev/null || true
 tell application "Notes"
 	set folderNames to {}
@@ -512,7 +610,7 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}6. Audit Log${RESET}\n"
+printf "${BOLD}7. Audit Log${RESET}\n"
 
 AUDIT_FILE="$HOME/.openscope/audit.jsonl"
 if [ -f "$AUDIT_FILE" ] && [ -s "$AUDIT_FILE" ]; then
