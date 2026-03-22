@@ -4,22 +4,25 @@
 package doctor
 
 import (
+	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/openscope/openscope/config"
 )
 
 type Report struct {
-	OK              bool         `json:"ok"`
-	ConfigDirExists bool         `json:"config_dir_exists"`
-	DaemonRunning   bool         `json:"daemon_running"`
-	AsapplePath     string       `json:"asapple_path,omitempty"`
-	AsappleSigned   bool         `json:"asapple_signed"`
-	NotesAccess     NotesCheck   `json:"notes_access"`
-	Hints           []string     `json:"hints,omitempty"`
+	OK              bool       `json:"ok"`
+	ConfigDirExists bool       `json:"config_dir_exists"`
+	DaemonRunning   bool       `json:"daemon_running"`
+	AsapplePath     string     `json:"asapple_path,omitempty"`
+	AsappleSigned   bool       `json:"asapple_signed"`
+	NotesAccess     NotesCheck `json:"notes_access"`
+	Hints           []string   `json:"hints,omitempty"`
 }
 
 type NotesCheck struct {
@@ -40,9 +43,13 @@ func Run(paths config.Paths) Report {
 	}
 
 	// Daemon reachability
-	report.DaemonRunning = checkSocket(paths.SocketPath)
+	report.DaemonRunning = checkBroker(paths)
 	if !report.DaemonRunning {
-		hints = append(hints, "daemon not running — restart: launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped")
+		if strings.TrimSpace(paths.HTTPURL) != "" {
+			hints = append(hints, "broker not reachable over HTTP — verify OPENSCOPE_HTTP_URL and that openscoped is listening on OPENSCOPE_HTTP_LISTEN")
+		} else {
+			hints = append(hints, "daemon not running — restart: launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped")
+		}
 	}
 
 	// asapple binary
@@ -80,6 +87,25 @@ func checkSocket(socketPath string) bool {
 	}
 	conn.Close()
 	return true
+}
+
+func checkBroker(paths config.Paths) bool {
+	if strings.TrimSpace(paths.HTTPURL) != "" {
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get(strings.TrimRight(paths.HTTPURL, "/") + "/healthz")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+
+		var payload map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return false
+		}
+		ok, _ := payload["ok"].(bool)
+		return ok
+	}
+	return checkSocket(paths.SocketPath)
 }
 
 func findAsapple() string {

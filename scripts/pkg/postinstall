@@ -12,6 +12,8 @@ PLIST_NAME="com.ezblock.openscope.openscoped.plist"
 PLIST_SRC="$APP/Contents/Resources/launchd/$PLIST_NAME"
 CLI_SRC="$APP/Contents/Resources/bin/openscope"
 CLI_LINK="/usr/local/bin/openscope"
+PILOT_SRC_DIR="/usr/local/lib/openscope/pilot"
+PILOT_LINK="/usr/local/bin/openscope-diag"
 
 # ── Find the console user ────────────────────────────────────────────────────
 # PKG postinstall runs as root. We need the human user who is logged in.
@@ -41,6 +43,14 @@ if [ -L "$CLI_LINK" ] || [ -e "$CLI_LINK" ]; then
 fi
 ln -s "$CLI_SRC" "$CLI_LINK"
 echo "postinstall: installed $CLI_LINK -> $CLI_SRC"
+
+if [ -f "$PILOT_SRC_DIR/pilot_test.sh" ]; then
+  if [ -L "$PILOT_LINK" ] || [ -e "$PILOT_LINK" ]; then
+    rm -f "$PILOT_LINK"
+  fi
+  ln -s "$PILOT_SRC_DIR/pilot_test.sh" "$PILOT_LINK"
+  echo "postinstall: installed $PILOT_LINK -> $PILOT_SRC_DIR/pilot_test.sh"
+fi
 
 # ── LaunchAgent ──────────────────────────────────────────────────────────────
 mkdir -p "$LAUNCH_AGENTS_DIR"

@@ -94,7 +94,7 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: fmt.Sprintf("agent %q is not registered", request.Agent), ExitCode: ExitDenied}
 	}
 
-	actionContext := action.PolicyContext(request.Params)
+	actionContext := entry.Definition.PolicyContext(request.Action, request.Params)
 	protected, err := admin.LoadProtectedFoldersOrDefault(s.Paths)
 	if err != nil {
 		return ipc.Response{OK: false, Error: fmt.Sprintf("load protected folder blacklist: %v", err), ExitCode: ExitConfigError}

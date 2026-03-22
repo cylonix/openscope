@@ -1,0 +1,16 @@
+version: 1
+app:
+  name: messages
+  display_name: Messages
+  executor: applescript
+  description: Brokered passthrough access to Messages
+  security_mode: passthrough
+
+actions:
+  list_services:
+    description: List available messaging services
+    parameters: []
+    output:
+      mode: json
+      schema: services
+    script: messages/list_services.applescript

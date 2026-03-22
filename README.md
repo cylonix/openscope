@@ -1,9 +1,12 @@
 # OpenScope
 
-OpenScope is a local application access broker for AI agents on macOS. It lets
-authorized agents access protected apps such as Apple Notes and Apple Mail
-through a policy-enforced, audited channel, without repeated macOS automation
-prompts.
+OpenScope is a scoped access broker for AI agents. Today it brokers protected
+macOS app access such as Apple Notes and Apple Mail, and the same model can
+extend to sandboxed agents and future remote operations.
+
+In the broader Cylonix + OpenScope model, Cylonix provides secure private reach
+into environments, and OpenScope provides the brokered action layer on top of
+that reach.
 
 ## Architecture
 
@@ -16,6 +19,7 @@ AI agent
 ```
 
 - **`openscope`** — CLI wrapper that sends requests to the daemon over a Unix socket
+  or an optional localhost HTTP bridge
 - **`openscoped`** — signed broker daemon: validates requests, enforces policy, executes
   actions, appends audit events, returns results
 - **`asapple`** — compiled Swift helper co-located with `openscoped` inside the signed app
@@ -69,6 +73,12 @@ openscope mail read_message --agent openclaw --mailbox Inbox --id "<message-id>"
 
 # Read just the message body
 openscope mail read_message --agent openclaw --mailbox Inbox --id "<message-id>" --body-only
+
+# Opt in to bundled passthrough apps such as Calendar
+sudo openscope app activate --agent openclaw calendar reminders
+
+# Validate the installed setup end to end
+openscope-diag
 ```
 
 ## Commands
@@ -85,6 +95,8 @@ openscope app list
 openscope app show <app>
 openscope app enable <app>          # user-defined apps only
 openscope app disable <app>
+sudo openscope app activate --agent <agent-id> <app> [app...]
+sudo openscope app deactivate --agent <agent-id> <app> [app...]
 openscope app validate [--file <path>]
 
 # Policy management
@@ -207,10 +219,23 @@ If you want to use OpenScope as the security boundary for an OpenClaw agent:
 
 - use the runtime instructions in [`docs/openclaw/SKILL.md`](docs/openclaw/SKILL.md)
 - use the setup guide in [`docs/openclaw_user_guide.md`](docs/openclaw_user_guide.md)
+- use the sandbox bridge guide in [`docs/nemoclaw_socket_demo.md`](docs/nemoclaw_socket_demo.md) for NemoClaw/OpenShell
+- use the install guide in [`docs/nemoclaw_install.md`](docs/nemoclaw_install.md) for client-only sandbox installs
+- use the architecture note in [`docs/cylonix_openscope_architecture.md`](docs/cylonix_openscope_architecture.md) for the Cylonix + OpenScope model
+
+For local native agents, keep using the `openscope` CLI directly. For sandboxed
+agents, use the same CLI and point it at either:
+
+- `OPENSCOPE_SOCKET` for a provisioned Unix socket
+- `OPENSCOPE_HTTP_URL` for a localhost bridge such as `http://host.docker.internal:42357`
 
 For local setups, OpenScope agent names are best treated as policy and audit
 labels. For enterprise deployments, registration and policy should be centrally
 managed and distributed to devices rather than created ad hoc on each machine.
+
+Common Apple apps such as Calendar, Reminders, Contacts, Safari, and Messages
+are now bundled as brokered passthrough apps. They are still denied by default
+until you opt in with `sudo openscope app activate --agent openclaw <app>`.
 
 For Notes, a practical default is to name sensitive folders with `Private` or
 `Hidden`, or add more protected keywords with

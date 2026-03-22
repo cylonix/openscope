@@ -1,0 +1,31 @@
+version: 1
+app:
+  name: calendar
+  display_name: Apple Calendar
+  executor: applescript
+  description: Brokered passthrough access to Apple Calendar
+  security_mode: passthrough
+
+actions:
+  list_calendars:
+    description: List visible calendars
+    parameters: []
+    output:
+      mode: json
+      schema: calendars
+    script: calendar/list_calendars.applescript
+
+  list_events:
+    description: List upcoming events for a calendar
+    parameters:
+      - name: calendar
+        type: string
+        required: false
+        policy_key: calendar
+      - name: limit
+        type: integer
+        required: false
+    output:
+      mode: json
+      schema: events
+    script: calendar/list_events.applescript

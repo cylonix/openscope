@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/policy"
 )
 
 func TestRunInitWritesDefaultConfig(t *testing.T) {
@@ -84,5 +86,67 @@ func TestRunInitRequiresForceToOverwriteExistingConfig(t *testing.T) {
 	code = runInit(paths, []string{"--force"})
 	if code != 0 {
 		t.Fatalf("runInit with force returned code %d", code)
+	}
+}
+
+func TestApplyBundledPassthroughActivationAddsAndRemovesRules(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{
+		HomeDir:         home,
+		ConfigDir:       filepath.Join(home, ".openscope"),
+		AppsDir:         filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:          filepath.Join(home, ".openscope", "run"),
+		StateDir:        filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:    filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:      filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:       filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile: filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:      filepath.Join(home, ".openscope", "run", "openscoped.sock"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("EnsureLayout returned error: %v", err)
+	}
+
+	defs := map[string]appdef.Definition{
+		"calendar": {
+			Bundled: true,
+			App: appdef.App{
+				Name:         "calendar",
+				Executor:     "applescript",
+				SecurityMode: "passthrough",
+			},
+			Actions: map[string]appdef.Action{
+				"list_calendars": {},
+				"list_events":    {},
+			},
+		},
+	}
+
+	results, exitCode, err := applyBundledPassthroughActivation(paths, defs, "openclaw", []string{"calendar"}, true)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("activate returned exit=%d err=%v", exitCode, err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one activation result, got %#v", results)
+	}
+
+	pf, err := policy.LoadDefault(paths)
+	if err != nil {
+		t.Fatalf("LoadDefault returned error: %v", err)
+	}
+	if len(pf.Rules) != 2 {
+		t.Fatalf("expected 2 rules after activation, got %#v", pf.Rules)
+	}
+
+	_, exitCode, err = applyBundledPassthroughActivation(paths, defs, "openclaw", []string{"calendar"}, false)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("deactivate returned exit=%d err=%v", exitCode, err)
+	}
+	pf, err = policy.LoadDefault(paths)
+	if err != nil {
+		t.Fatalf("LoadDefault returned error: %v", err)
+	}
+	if len(pf.Rules) != 0 {
+		t.Fatalf("expected no rules after deactivation, got %#v", pf.Rules)
 	}
 }

@@ -24,6 +24,8 @@ type Paths struct {
 	AuditFile            string
 	EnabledAppsFile      string
 	SocketPath           string
+	HTTPListenAddr       string
+	HTTPURL              string
 	AdminDir             string
 	ProtectedFoldersFile string
 	MailFiltersFile      string
@@ -36,7 +38,16 @@ func DefaultPaths() (Paths, error) {
 	}
 
 	configDir := filepath.Join(home, DirName)
-	return Paths{
+	if override := os.Getenv("OPENSCOPE_CONFIG_DIR"); override != "" {
+		configDir = override
+	}
+
+	adminDir := AdminDir
+	if override := os.Getenv("OPENSCOPE_ADMIN_DIR"); override != "" {
+		adminDir = override
+	}
+
+	paths := Paths{
 		HomeDir:              home,
 		ConfigDir:            configDir,
 		AppsDir:              filepath.Join(configDir, "apps.d"),
@@ -47,10 +58,18 @@ func DefaultPaths() (Paths, error) {
 		AuditFile:            filepath.Join(configDir, "audit.jsonl"),
 		EnabledAppsFile:      filepath.Join(configDir, "state", "enabled_apps.yaml"),
 		SocketPath:           filepath.Join(configDir, "run", "openscoped.sock"),
-		AdminDir:             AdminDir,
-		ProtectedFoldersFile: filepath.Join(AdminDir, "protected_folders.yaml"),
-		MailFiltersFile:      filepath.Join(AdminDir, "mail_filters.yaml"),
-	}, nil
+		HTTPListenAddr:       os.Getenv("OPENSCOPE_HTTP_LISTEN"),
+		HTTPURL:              os.Getenv("OPENSCOPE_HTTP_URL"),
+		AdminDir:             adminDir,
+		ProtectedFoldersFile: filepath.Join(adminDir, "protected_folders.yaml"),
+		MailFiltersFile:      filepath.Join(adminDir, "mail_filters.yaml"),
+	}
+
+	if override := os.Getenv("OPENSCOPE_SOCKET"); override != "" {
+		paths.SocketPath = override
+	}
+
+	return paths, nil
 }
 
 func resolveConfigHomeDir() (string, error) {

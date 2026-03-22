@@ -4,6 +4,7 @@ app:
   display_name: Apple Notes
   executor: applescript
   description: Protected access to Apple Notes via AppleScript
+  security_mode: protected
 
 actions:
   list_folders:

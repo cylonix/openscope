@@ -8,8 +8,12 @@ bin/
 *.xcuserdatad/
 
 # Distribution artifacts (built, not checked in)
+dist/
 dist/export/
 dist/*.pkg
+
+# Local script caches
+scripts/__pycache__/
 
 # Local developer config (contains signing credentials)
 .env.local

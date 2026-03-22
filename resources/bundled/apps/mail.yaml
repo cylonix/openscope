@@ -4,6 +4,7 @@ app:
   display_name: Apple Mail
   executor: applescript
   description: Protected read-only access to Apple Mail via AppleScript
+  security_mode: protected
 
 actions:
   list_messages:

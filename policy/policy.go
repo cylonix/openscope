@@ -98,6 +98,34 @@ func AddRule(paths config.Paths, rule Rule) (File, bool, error) {
 	return pf, true, nil
 }
 
+// RemoveRules removes every rule that matches the predicate and returns the
+// updated file plus the number of removed rules.
+func RemoveRules(paths config.Paths, predicate func(Rule) bool) (File, int, error) {
+	pf, err := LoadDefaultOrEmpty(paths)
+	if err != nil {
+		return File{}, 0, err
+	}
+
+	filtered := make([]Rule, 0, len(pf.Rules))
+	removed := 0
+	for _, rule := range pf.Rules {
+		if predicate(rule) {
+			removed++
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	if removed == 0 {
+		return pf, 0, nil
+	}
+
+	pf.Rules = filtered
+	if err := SaveDefault(paths, pf); err != nil {
+		return File{}, 0, err
+	}
+	return pf, removed, nil
+}
+
 func rulesEqual(a, b Rule) bool {
 	if a.Effect != b.Effect || a.Agent != b.Agent || a.App != b.App || a.Action != b.Action {
 		return false
@@ -131,12 +159,11 @@ func (f File) Validate() error {
 }
 
 func Evaluate(policyFile File, def appdef.Definition, actionName, agentID string, params map[string]string) Decision {
-	action, ok := def.Action(actionName)
-	if !ok {
+	if _, ok := def.Action(actionName); !ok {
 		return Decision{Allowed: false, Reason: "unknown action"}
 	}
 
-	context := action.PolicyContext(params)
+	context := def.PolicyContext(actionName, params)
 	var matchedAllow *Rule
 
 	for i := range policyFile.Rules {

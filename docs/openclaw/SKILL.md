@@ -18,10 +18,9 @@ it to use.
 
 ## Current Scope
 
-Today, the bundled protected apps are Apple Notes and Apple Mail.
-
-Use the same pattern for future bundled apps such as Calendar when they are added,
-or for user-defined apps that the user has installed and enabled.
+Today, the bundled protected apps are Apple Notes and Apple Mail. OpenScope also
+bundles common passthrough apps such as Calendar, Reminders, Contacts, Safari,
+and Messages, but those remain denied until the user activates them.
 
 ## Rules
 
@@ -31,6 +30,8 @@ or for user-defined apps that the user has installed and enabled.
 - Prefer the narrowest action that solves the task.
 - Prefer plain-text output when the action supports it and you need text for analysis.
 - Do not invent or switch to other agent labels such as `admin`.
+- If a bundled passthrough app is denied, ask the user to activate it with
+  `sudo openscope app activate --agent openclaw <app>` instead of bypassing OpenScope.
 
 ## Core Commands
 
@@ -90,7 +91,7 @@ If a request is denied:
 
 - Do not use `osascript` or direct Apple events.
 - Do not switch to another agent identity to work around policy.
-- Do not claim Calendar or other apps are available unless `openscope app list` shows them
-  or the user has explicitly configured them.
+- Do not claim a passthrough app is usable until it has been activated for the
+  current agent.
 - Do not assume OpenScope labels are secrets; use only the label the user provisioned
   for OpenClaw.

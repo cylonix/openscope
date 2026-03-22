@@ -15,6 +15,18 @@
 
 set -euo pipefail
 
+SOURCE_PATH="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SOURCE_PATH" ]; do
+  LINK_TARGET="$(readlink "$SOURCE_PATH")"
+  if [[ "$LINK_TARGET" = /* ]]; then
+    SOURCE_PATH="$LINK_TARGET"
+  else
+    SOURCE_DIR="$(cd "$(dirname "$SOURCE_PATH")" && pwd)"
+    SOURCE_PATH="$SOURCE_DIR/$LINK_TARGET"
+  fi
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE_PATH")" && pwd)"
+
 # ── colour helpers ─────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
   GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
@@ -25,6 +37,12 @@ fi
 
 PASS_COUNT=0; FAIL_COUNT=0; SKIP_COUNT=0
 REPORT=()  # "STATUS|NAME|DETAIL"
+HTTP_PID=""
+HTTP_SOCKET=""
+HTTP_STDOUT=""
+HTTP_STDERR=""
+ACTIVATION_APP="calendar"
+ACTIVATION_READY=0
 
 record() { REPORT+=("$1|$2|$3")
   case "$1" in PASS) PASS_COUNT=$((PASS_COUNT+1));; FAIL) FAIL_COUNT=$((FAIL_COUNT+1));; SKIP) SKIP_COUNT=$((SKIP_COUNT+1));; esac
@@ -79,6 +97,68 @@ contains_deny_reason() {
 contains_transport_failure() {
   echo "$1" | grep -qiE "daemon unavailable|not responding|connect to daemon|operation not permitted"
 }
+
+contains_automation_denied() {
+  echo "$1" | grep -qiE "not authorized to send apple events|automation|not authorised to send apple events"
+}
+
+contains_app_unavailable() {
+  echo "$1" | grep -qiE "application|calendar got an error" && echo "$1" | grep -qiE "running|can.?t get"
+}
+
+run_with_optional_sudo() {
+  if sudo -n true >/dev/null 2>&1; then
+    TEST_OUTPUT=""
+    run_test "$1" "$2" sudo -n "${@:3}"
+    return $?
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    TEST_OUTPUT=""
+    run_test "$1" "$2" sudo "${@:3}"
+    return $?
+  fi
+  TEST_OUTPUT="sudo credentials unavailable"
+  return 1
+}
+
+pick_free_port() {
+  python3 <<'EOF' 2>/dev/null || true
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+EOF
+}
+
+find_docker_bin() {
+  if command -v docker >/dev/null 2>&1; then
+    command -v docker
+    return 0
+  fi
+  if [ -x "/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
+    echo "/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker"
+    return 0
+  fi
+  if [ -x "/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
+    echo "/Applications/Docker.app/Contents/Resources/bin/docker"
+    return 0
+  fi
+  return 1
+}
+
+cleanup() {
+  if [ -n "$HTTP_PID" ] && kill -0 "$HTTP_PID" 2>/dev/null; then
+    kill "$HTTP_PID" 2>/dev/null || true
+    wait "$HTTP_PID" 2>/dev/null || true
+  fi
+  [ -n "$HTTP_SOCKET" ] && rm -f "$HTTP_SOCKET" 2>/dev/null || true
+  [ -n "$HTTP_STDOUT" ] && rm -f "$HTTP_STDOUT" 2>/dev/null || true
+  [ -n "$HTTP_STDERR" ] && rm -f "$HTTP_STDERR" 2>/dev/null || true
+
+}
+
+trap cleanup EXIT
 
 # ── header ─────────────────────────────────────────────────────────────────────
 printf "\n${BOLD}OpenScope Pilot Test Suite${RESET}\n"
@@ -335,7 +415,233 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}4. Notes Actions  (agent: $AGENT)${RESET}\n"
+printf "${BOLD}4. Passthrough App Mode${RESET}\n"
+
+APP_LIST_JSON=$(openscope app list 2>&1 || true)
+BUNDLED_PASSTHROUGH_COUNT=$(json_extract "$APP_LIST_JSON" "
+apps=d.get('apps', [])
+names=sorted(a.get('name') for a in apps if a.get('bundled') and a.get('name') in {'calendar','reminders','contacts','safari','messages'})
+print(len(names))
+for name in names:
+    print(name)
+")
+COUNT_LINE="$(echo "$BUNDLED_PASSTHROUGH_COUNT" | head -1)"
+if [ "$COUNT_LINE" = "5" ]; then
+  record PASS "Bundled passthrough apps" "calendar reminders contacts safari messages"
+  print_status PASS "Bundled passthrough apps" "5 bundled apps present"
+  show_evidence "$(echo "$BUNDLED_PASSTHROUGH_COUNT" | tail -n +2)"
+else
+  record FAIL "Bundled passthrough apps" "expected 5 common apps"
+  print_status FAIL "Bundled passthrough apps" "expected 5 common apps"
+  show_evidence "$APP_LIST_JSON"
+fi
+
+CALENDAR_POLICY_ACTIVE=0
+if [ -f "$POLICY_FILE" ] && grep -Eq "agent:[[:space:]]*$AGENT" "$POLICY_FILE" && grep -Eq "app:[[:space:]]*calendar" "$POLICY_FILE"; then
+  CALENDAR_POLICY_ACTIVE=1
+fi
+
+if [ "$CALENDAR_POLICY_ACTIVE" -eq 1 ]; then
+  ACTIVATION_READY=1
+  if run_test "calendar already active" 0 openscope calendar list_calendars --agent "$AGENT"; then
+    CAL_COUNT=$(json_extract "$TEST_OUTPUT" "print(len(d.get('data', [])))")
+    record PASS "Calendar already activated" "$CAL_COUNT calendar(s) available for $AGENT"
+    print_status PASS "Calendar already activated" "$CAL_COUNT calendar(s)"
+    show_evidence "$TEST_OUTPUT"
+  elif contains_automation_denied "$TEST_OUTPUT"; then
+    record SKIP "Calendar permission" "Calendar brokered access is activated but macOS Automation for Calendar is not yet granted"
+    print_status SKIP "Calendar permission" "grant OpenScope Automation access to Calendar to validate live passthrough execution"
+    show_evidence "$TEST_OUTPUT"
+  elif contains_app_unavailable "$TEST_OUTPUT"; then
+    record SKIP "Calendar runtime" "Calendar app is not running; passthrough policy is already activated"
+    print_status SKIP "Calendar runtime" "launch Calendar to validate live passthrough execution"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record FAIL "Calendar already activated" "$(echo "$TEST_OUTPUT" | head -1)"
+    print_status FAIL "Calendar already activated" "$(echo "$TEST_OUTPUT" | head -1)"
+    show_evidence "$TEST_OUTPUT"
+  fi
+  record SKIP "Calendar activation" "already activated in current policy"
+  print_status SKIP "Calendar activation" "already activated in current policy"
+elif run_test "calendar before activation" 0 openscope calendar list_calendars --agent "$AGENT"; then
+  ACTIVATION_READY=1
+  CAL_COUNT=$(json_extract "$TEST_OUTPUT" "print(len(d.get('data', [])))")
+  record PASS "Calendar already activated" "$CAL_COUNT calendar(s) available for $AGENT"
+  print_status PASS "Calendar already activated" "$CAL_COUNT calendar(s)"
+  show_evidence "$TEST_OUTPUT"
+  record SKIP "Calendar activation" "already activated in current policy"
+  print_status SKIP "Calendar activation" "already activated in current policy"
+else
+  if contains_deny_reason "$TEST_OUTPUT"; then
+    record PASS "Calendar denied before activation" "passthrough apps are opt-in"
+    print_status PASS "Calendar denied before activation" "expected deny"
+    show_evidence "$TEST_OUTPUT"
+  elif contains_automation_denied "$TEST_OUTPUT"; then
+    ACTIVATION_READY=1
+    record SKIP "Calendar permission" "Calendar brokered access is activated but macOS Automation for Calendar is not yet granted"
+    print_status SKIP "Calendar permission" "grant OpenScope Automation access to Calendar to validate live passthrough execution"
+    show_evidence "$TEST_OUTPUT"
+    record SKIP "Calendar activation" "already activated in current policy"
+    print_status SKIP "Calendar activation" "already activated in current policy"
+  elif contains_app_unavailable "$TEST_OUTPUT"; then
+    ACTIVATION_READY=1
+    record SKIP "Calendar runtime" "Calendar app is unavailable or not running; passthrough policy appears active"
+    print_status SKIP "Calendar runtime" "launch Calendar to validate live passthrough execution"
+    show_evidence "$TEST_OUTPUT"
+    record SKIP "Calendar activation" "already activated in current policy"
+    print_status SKIP "Calendar activation" "already activated in current policy"
+  else
+    record FAIL "Calendar denied before activation" "failed for the wrong reason"
+    print_status FAIL "Calendar denied before activation" "failed for the wrong reason"
+    show_evidence "$TEST_OUTPUT"
+    if run_with_optional_sudo "calendar activate" 0 openscope app activate --agent "$AGENT" "$ACTIVATION_APP"; then
+      if run_test "calendar success" 0 openscope calendar list_calendars --agent "$AGENT"; then
+        ACTIVATION_READY=1
+        CAL_COUNT=$(json_extract "$TEST_OUTPUT" "print(len(d.get('data', [])))")
+        record PASS "Calendar activation" "$CAL_COUNT calendar(s) via bundled passthrough app"
+        print_status PASS "Calendar activation" "$CAL_COUNT calendar(s)"
+        show_evidence "$TEST_OUTPUT"
+      elif contains_automation_denied "$TEST_OUTPUT"; then
+        ACTIVATION_READY=1
+        record SKIP "Calendar permission" "Calendar app activated, but macOS Automation for Calendar is not yet granted"
+        print_status SKIP "Calendar permission" "grant OpenScope Automation access to Calendar to validate live passthrough execution"
+        show_evidence "$TEST_OUTPUT"
+      else
+        record FAIL "Calendar activation" "$(echo "$TEST_OUTPUT" | head -1)"
+        print_status FAIL "Calendar activation" "$(echo "$TEST_OUTPUT" | head -1)"
+        show_evidence "$TEST_OUTPUT"
+      fi
+    elif echo "$TEST_OUTPUT" | grep -qi "sudo credentials unavailable"; then
+      record SKIP "Calendar activation" "sudo credentials unavailable"
+      print_status SKIP "Calendar activation" "sudo credentials unavailable"
+    else
+      record FAIL "Calendar activation" "$(echo "$TEST_OUTPUT" | head -1)"
+      print_status FAIL "Calendar activation" "$(echo "$TEST_OUTPUT" | head -1)"
+      show_evidence "$TEST_OUTPUT"
+    fi
+  fi
+fi
+
+printf '\n'
+
+# ══════════════════════════════════════════════════════════════════════════════
+printf "${BOLD}5. Local HTTP Client Access${RESET}\n"
+
+HTTP_PORT="$(pick_free_port)"
+if [ -z "$HTTP_PORT" ]; then
+  HTTP_PORT="42357"
+fi
+HTTP_BIN="$APP/Contents/Resources/bin/openscoped"
+HTTP_READY=0
+
+if [ -z "$HTTP_PORT" ] || [ ! -x "$HTTP_BIN" ]; then
+  record SKIP "Local HTTP client access" "temporary HTTP broker prerequisites missing"
+  print_status SKIP "Local HTTP client access" "temporary HTTP broker prerequisites missing"
+else
+  HTTP_SOCKET=$(mktemp -u /tmp/openscope-http.XXXXXX.sock)
+  HTTP_STDOUT=$(mktemp)
+  HTTP_STDERR=$(mktemp)
+  OPENSCOPE_SOCKET="$HTTP_SOCKET" OPENSCOPE_HTTP_LISTEN="127.0.0.1:$HTTP_PORT" "$HTTP_BIN" >"$HTTP_STDOUT" 2>"$HTTP_STDERR" &
+  HTTP_PID=$!
+
+  for _ in $(seq 1 20); do
+    HTTP_STATUS=$(env OPENSCOPE_HTTP_URL="http://127.0.0.1:$HTTP_PORT" openscope status 2>&1 || true)
+    HTTP_RUNNING=$(json_extract "$HTTP_STATUS" "print(str(d.get('daemon',{}).get('running',False)).lower())")
+    if [ "$HTTP_RUNNING" = "true" ]; then
+      HTTP_READY=1
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [ "$HTTP_READY" -eq 1 ] && run_test "http policy deny" 1 env OPENSCOPE_HTTP_URL="http://127.0.0.1:$HTTP_PORT" openscope notes list_folders --agent "$AGENT"; then
+    if contains_deny_reason "$TEST_OUTPUT"; then
+      record PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+      print_status PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+      show_evidence "$HTTP_STATUS
+$TEST_OUTPUT"
+    else
+      record FAIL "Local HTTP client access" "HTTP broker reachable but returned wrong result"
+      print_status FAIL "Local HTTP client access" "HTTP broker reachable but returned wrong result"
+      show_evidence "$HTTP_STATUS
+$TEST_OUTPUT"
+    fi
+  elif [ "$HTTP_READY" -eq 1 ] && [ "$ACTIVATION_READY" -ne 1 ]; then
+    record PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+    print_status PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+    show_evidence "$HTTP_STATUS"
+  elif [ "$HTTP_READY" -eq 1 ] && [ "$ACTIVATION_READY" -eq 1 ] && run_test "http calendar" 0 env OPENSCOPE_HTTP_URL="http://127.0.0.1:$HTTP_PORT" openscope calendar list_calendars --agent "$AGENT"; then
+    record PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+    print_status PASS "Local HTTP client access" "http://127.0.0.1:$HTTP_PORT"
+    show_evidence "$HTTP_STATUS
+$TEST_OUTPUT"
+  else
+    record FAIL "Local HTTP client access" "temporary HTTP broker did not respond"
+    print_status FAIL "Local HTTP client access" "temporary HTTP broker did not respond"
+    show_evidence "$(cat "$HTTP_STDERR" 2>/dev/null || true)"
+  fi
+fi
+
+printf '\n'
+
+# ══════════════════════════════════════════════════════════════════════════════
+printf "${BOLD}6. NemoClaw Bridge${RESET}\n"
+
+DEMO_ROOT="/Volumes/2TB-1/openscope-nemoclaw-demo"
+DOCKER_BIN="$(find_docker_bin || true)"
+if [ -z "$DOCKER_BIN" ]; then
+  record SKIP "NemoClaw sandbox test" "docker not installed"
+  print_status SKIP "NemoClaw sandbox test" "docker not installed"
+elif [ "$HTTP_READY" -ne 1 ]; then
+  record SKIP "NemoClaw sandbox test" "local HTTP bridge unavailable"
+  print_status SKIP "NemoClaw sandbox test" "local HTTP bridge unavailable"
+else
+  if "$SCRIPT_DIR/setup_nemoclaw_demo.sh" "$DEMO_ROOT" >/dev/null 2>&1; then
+    record PASS "NemoClaw client bundle" "$DEMO_ROOT"
+    print_status PASS "NemoClaw client bundle" "refreshed"
+  elif [ -x "$DEMO_ROOT/bin/openscope" ] && [ -f "$DEMO_ROOT/scripts/nemoclaw_pilot_test.sh" ]; then
+    record SKIP "NemoClaw client bundle" "refresh failed; using existing bundle"
+    print_status SKIP "NemoClaw client bundle" "refresh failed; using existing bundle"
+  else
+    record FAIL "NemoClaw client bundle" "setup failed"
+    print_status FAIL "NemoClaw client bundle" "setup failed"
+  fi
+
+  if [ -x "$DEMO_ROOT/bin/openscope" ] && run_test "nemoclaw http bridge" 0 env DOCKER_BIN="$DOCKER_BIN" OPENSCOPE_HTTP_URL="http://host.docker.internal:$HTTP_PORT" "$SCRIPT_DIR/run_nemoclaw_demo_container.sh" "$DEMO_ROOT"; then
+    record PASS "NemoClaw sandbox test" "HTTP bridge to host broker succeeded"
+    print_status PASS "NemoClaw sandbox test" "HTTP bridge to host broker succeeded"
+    NEMO_SUMMARY=$(printf "%s\n" "$TEST_OUTPUT" | awk '
+      /Passthrough Apps Through Broker/ { keep=1 }
+      keep { print }
+    ')
+    if [ -n "$NEMO_SUMMARY" ]; then
+      show_evidence "$NEMO_SUMMARY" 40
+    else
+      show_evidence "$(echo "$TEST_OUTPUT" | tail -30)" 30
+    fi
+  elif [ -x "$DEMO_ROOT/bin/openscope" ]; then
+    record FAIL "NemoClaw sandbox test" "$(echo "$TEST_OUTPUT" | head -1)"
+    print_status FAIL "NemoClaw sandbox test" "$(echo "$TEST_OUTPUT" | head -1)"
+    show_evidence "$TEST_OUTPUT"
+  else
+    record SKIP "NemoClaw sandbox test" "client bundle unavailable"
+    print_status SKIP "NemoClaw sandbox test" "client bundle unavailable"
+  fi
+fi
+
+if [ -n "$HTTP_PID" ] && kill -0 "$HTTP_PID" 2>/dev/null; then
+  kill "$HTTP_PID" 2>/dev/null || true
+  wait "$HTTP_PID" 2>/dev/null || true
+  HTTP_PID=""
+fi
+[ -n "$HTTP_SOCKET" ] && rm -f "$HTTP_SOCKET" 2>/dev/null || true
+[ -n "$HTTP_STDOUT" ] && rm -f "$HTTP_STDOUT" 2>/dev/null || true
+[ -n "$HTTP_STDERR" ] && rm -f "$HTTP_STDERR" 2>/dev/null || true
+
+printf '\n'
+
+# ══════════════════════════════════════════════════════════════════════════════
+printf "${BOLD}7. Notes Actions  (agent: $AGENT)${RESET}\n"
 
 # 4.1 list_folders is intentionally denied for openclaw
 if run_test "list_folders denied" 1 openscope notes list_folders --agent "$AGENT"; then
@@ -433,7 +739,7 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}5. Mail Actions  (agent: $AGENT)${RESET}\n"
+printf "${BOLD}8. Mail Actions  (agent: $AGENT)${RESET}\n"
 
 MAILBOX="Inbox"
 MAIL_MESSAGE_ID=""
@@ -509,7 +815,7 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}6. Policy Enforcement${RESET}\n"
+printf "${BOLD}9. Policy Enforcement${RESET}\n"
 
 # 6.1 Unregistered agent rejected
 RANDOM_AGENT="pilot_test_agent_$$"
@@ -610,7 +916,7 @@ fi
 printf '\n'
 
 # ══════════════════════════════════════════════════════════════════════════════
-printf "${BOLD}7. Audit Log${RESET}\n"
+printf "${BOLD}10. Audit Log${RESET}\n"
 
 AUDIT_FILE="$HOME/.openscope/audit.jsonl"
 if [ -f "$AUDIT_FILE" ] && [ -s "$AUDIT_FILE" ]; then

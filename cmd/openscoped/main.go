@@ -22,8 +22,20 @@ func main() {
 		os.Exit(daemon.ExitConfigError)
 	}
 
-	if err := daemon.ListenAndServe(paths, daemon.NewService(paths)); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-		os.Exit(daemon.ExitExecutorError)
+	service := daemon.NewService(paths)
+	errCh := make(chan error, 2)
+
+	go func() {
+		errCh <- daemon.ListenAndServe(paths, service)
+	}()
+
+	if paths.HTTPListenAddr != "" {
+		go func() {
+			errCh <- daemon.ListenAndServeHTTP(paths.HTTPListenAddr, service)
+		}()
 	}
+
+	err = <-errCh
+	_, _ = fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
+	os.Exit(daemon.ExitExecutorError)
 }

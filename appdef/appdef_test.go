@@ -25,3 +25,21 @@ func TestActionPolicyContextUsesPolicyKeys(t *testing.T) {
 		t.Fatalf("expected note_title policy key to be mapped")
 	}
 }
+
+func TestDefinitionPolicyContextIgnoresConstraintsForPassthroughApps(t *testing.T) {
+	def := Definition{
+		App: App{Name: "calendar", Executor: "applescript", SecurityMode: "passthrough"},
+		Actions: map[string]Action{
+			"list_events": {
+				Parameters: []Parameter{
+					{Name: "calendar", PolicyKey: "calendar"},
+				},
+			},
+		},
+	}
+
+	got := def.PolicyContext("list_events", map[string]string{"calendar": "Work"})
+	if len(got) != 0 {
+		t.Fatalf("expected passthrough apps to ignore parameter constraints, got %#v", got)
+	}
+}

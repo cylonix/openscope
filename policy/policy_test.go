@@ -67,3 +67,31 @@ func TestEvaluateRequiresMatchingAllow(t *testing.T) {
 		t.Fatalf("expected no matching allow to deny by default")
 	}
 }
+
+func TestEvaluatePassthroughAppIgnoresParameterConstraints(t *testing.T) {
+	def := appdef.Definition{
+		App: appdef.App{Name: "calendar", SecurityMode: "passthrough"},
+		Actions: map[string]appdef.Action{
+			"list_events": {
+				Parameters: []appdef.Parameter{
+					{Name: "calendar", PolicyKey: "calendar"},
+				},
+			},
+		},
+	}
+
+	pf := File{
+		Version: 1,
+		Rules: []Rule{
+			{Effect: "allow", Agent: "openclaw", App: "calendar", Action: "list_events"},
+		},
+	}
+
+	decision := Evaluate(pf, def, "list_events", "openclaw", map[string]string{
+		"calendar": "Personal",
+	})
+
+	if !decision.Allowed {
+		t.Fatalf("expected passthrough app allow rule without constraints to match, got deny: %s", decision.Reason)
+	}
+}

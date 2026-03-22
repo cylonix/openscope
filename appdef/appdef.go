@@ -25,10 +25,11 @@ type Definition struct {
 }
 
 type App struct {
-	Name        string `yaml:"name"`
-	DisplayName string `yaml:"display_name"`
-	Executor    string `yaml:"executor"`
-	Description string `yaml:"description"`
+	Name         string `yaml:"name"`
+	DisplayName  string `yaml:"display_name"`
+	Executor     string `yaml:"executor"`
+	Description  string `yaml:"description"`
+	SecurityMode string `yaml:"security_mode"`
 }
 
 type Action struct {
@@ -114,7 +115,7 @@ func LoadDir(path string) ([]Definition, error) {
 	return defs, nil
 }
 
-func (d Definition) Validate() error {
+func (d *Definition) Validate() error {
 	if d.Version == 0 {
 		return errors.New("app definition version is required")
 	}
@@ -123,6 +124,12 @@ func (d Definition) Validate() error {
 	}
 	if d.App.Executor == "" {
 		return errors.New("app.executor is required")
+	}
+	if d.App.SecurityMode == "" {
+		d.App.SecurityMode = "protected"
+	}
+	if d.App.SecurityMode != "protected" && d.App.SecurityMode != "passthrough" {
+		return fmt.Errorf("app.security_mode must be protected or passthrough, got %q", d.App.SecurityMode)
 	}
 	if len(d.Actions) == 0 {
 		return errors.New("at least one action is required")
@@ -173,6 +180,17 @@ func (a Action) PolicyContext(params map[string]string) map[string]string {
 		}
 	}
 	return context
+}
+
+func (d Definition) PolicyContext(actionName string, params map[string]string) map[string]string {
+	action, ok := d.Action(actionName)
+	if !ok {
+		return map[string]string{}
+	}
+	if d.App.SecurityMode == "passthrough" {
+		return map[string]string{}
+	}
+	return action.PolicyContext(params)
 }
 
 func LoadEnabledFile(path string) (EnabledFile, error) {

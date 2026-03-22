@@ -4,12 +4,17 @@
 package ipc
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"strings"
 
 	"github.com/openscope/openscope/config"
 )
+
+var httpClient = http.DefaultClient
 
 type Request struct {
 	App    string            `json:"app"`
@@ -30,6 +35,10 @@ type Response struct {
 }
 
 func Call(paths config.Paths, request Request) (Response, error) {
+	if paths.HTTPURL != "" {
+		return callHTTP(paths.HTTPURL, request)
+	}
+
 	conn, err := net.Dial("unix", paths.SocketPath)
 	if err != nil {
 		return Response{}, fmt.Errorf("connect to daemon: %w", err)
@@ -42,6 +51,32 @@ func Call(paths config.Paths, request Request) (Response, error) {
 
 	var response Response
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
+		return Response{}, fmt.Errorf("read response: %w", err)
+	}
+
+	return response, nil
+}
+
+func callHTTP(baseURL string, request Request) (Response, error) {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return Response{}, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/v1/actions", bytes.NewReader(payload))
+	if err != nil {
+		return Response{}, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return Response{}, fmt.Errorf("connect to daemon: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var response Response
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return Response{}, fmt.Errorf("read response: %w", err)
 	}
 

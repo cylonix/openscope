@@ -1,0 +1,19 @@
+version: 1
+app:
+  name: contacts
+  display_name: Apple Contacts
+  executor: applescript
+  description: Brokered passthrough access to Apple Contacts
+  security_mode: passthrough
+
+actions:
+  list_contacts:
+    description: List contacts
+    parameters:
+      - name: limit
+        type: integer
+        required: false
+    output:
+      mode: json
+      schema: contacts
+    script: contacts/list_contacts.applescript

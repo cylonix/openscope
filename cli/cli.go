@@ -84,11 +84,12 @@ func runApp(paths config.Paths, args []string) int {
 		for _, name := range names {
 			entry := loaded[name]
 			apps = append(apps, map[string]any{
-				"name":        name,
-				"displayName": entry.Definition.App.DisplayName,
-				"enabled":     entry.Enabled,
-				"bundled":     entry.Definition.Bundled,
-				"source":      entry.Definition.Source,
+				"name":         name,
+				"displayName":  entry.Definition.App.DisplayName,
+				"securityMode": entry.Definition.App.SecurityMode,
+				"enabled":      entry.Enabled,
+				"bundled":      entry.Definition.Bundled,
+				"source":       entry.Definition.Source,
 			})
 		}
 		return writeJSON(map[string]any{"apps": apps})
@@ -108,9 +109,10 @@ func runApp(paths config.Paths, args []string) int {
 			return daemon.ExitNotFound
 		}
 		return writeJSON(map[string]any{
-			"enabled": entry.Enabled,
-			"bundled": entry.Definition.Bundled,
-			"app":     entry.Definition,
+			"enabled":      entry.Enabled,
+			"bundled":      entry.Definition.Bundled,
+			"securityMode": entry.Definition.App.SecurityMode,
+			"app":          entry.Definition,
 		})
 	case "validate":
 		if len(args) == 2 {
@@ -139,6 +141,10 @@ func runApp(paths config.Paths, args []string) int {
 			return daemon.ExitInvalid
 		}
 		return setAppEnabled(paths, args[1], false)
+	case "activate":
+		return runAppActivation(paths, true, args[1:])
+	case "deactivate":
+		return runAppActivation(paths, false, args[1:])
 	default:
 		output.WriteErrorf("unknown app command %q", args[0])
 		return daemon.ExitInvalid
@@ -626,6 +632,120 @@ func setAppEnabled(paths config.Paths, appName string, enabled bool) int {
 	})
 }
 
+func runAppActivation(paths config.Paths, activate bool, args []string) int {
+	if err := requireRootForMutation("bundled passthrough app activation"); err != nil {
+		output.WriteErrorf("%v", err)
+		return daemon.ExitDenied
+	}
+
+	if len(args) < 3 || args[0] != "--agent" {
+		verb := "activate"
+		if !activate {
+			verb = "deactivate"
+		}
+		output.WriteErrorf("usage: openscope app %s --agent <agent_id> <app> [app...]", verb)
+		return daemon.ExitInvalid
+	}
+
+	agentID := args[1]
+	appNames := args[2:]
+	if agentID == "" || len(appNames) == 0 {
+		output.WriteErrorf("usage: openscope app activate --agent <agent_id> <app> [app...]")
+		return daemon.ExitInvalid
+	}
+
+	defs, err := loadAllDefinitions(paths)
+	if err != nil {
+		output.WriteErrorf("load app definitions: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	processed, exitCode, err := applyBundledPassthroughActivation(paths, defs, agentID, appNames, activate)
+	if err != nil {
+		output.WriteErrorf("%v", err)
+		return exitCode
+	}
+
+	return writeJSON(map[string]any{
+		"ok":      true,
+		"agent":   agentID,
+		"results": processed,
+	})
+}
+
+func applyBundledPassthroughActivation(paths config.Paths, defs map[string]appdef.Definition, agentID string, appNames []string, activate bool) ([]map[string]any, int, error) {
+	processed := make([]map[string]any, 0, len(appNames))
+	for _, appName := range appNames {
+		def, ok := defs[appName]
+		if !ok {
+			return nil, daemon.ExitNotFound, fmt.Errorf("app %q not found", appName)
+		}
+		if !def.Bundled {
+			return nil, daemon.ExitInvalid, fmt.Errorf("app %q is not a bundled app", appName)
+		}
+		if def.App.SecurityMode != "passthrough" {
+			return nil, daemon.ExitInvalid, fmt.Errorf("app %q is not a passthrough app", appName)
+		}
+
+		if activate {
+			added := 0
+			actionNames := sortedActionNames(def.Actions)
+			for _, actionName := range actionNames {
+				_, created, err := policy.AddRule(paths, policy.Rule{
+					Effect: "allow",
+					Agent:  agentID,
+					App:    appName,
+					Action: actionName,
+				})
+				if err != nil {
+					return nil, daemon.ExitConfigError, fmt.Errorf("activate app %q: %v", appName, err)
+				}
+				if created {
+					added++
+				}
+			}
+			processed = append(processed, map[string]any{
+				"app":         appName,
+				"activated":   true,
+				"rules_added": added,
+			})
+			continue
+		}
+
+		actionNames := make(map[string]struct{}, len(def.Actions))
+		for actionName := range def.Actions {
+			actionNames[actionName] = struct{}{}
+		}
+		_, removed, err := policy.RemoveRules(paths, func(rule policy.Rule) bool {
+			if rule.Effect != "allow" || rule.Agent != agentID || rule.App != appName {
+				return false
+			}
+			if _, ok := actionNames[rule.Action]; !ok {
+				return false
+			}
+			return len(rule.Constraints) == 0
+		})
+		if err != nil {
+			return nil, daemon.ExitConfigError, fmt.Errorf("deactivate app %q: %v", appName, err)
+		}
+		processed = append(processed, map[string]any{
+			"app":           appName,
+			"activated":     false,
+			"rules_removed": removed,
+		})
+	}
+	return processed, daemon.ExitOK, nil
+}
+
+func sortedActionNames(actions map[string]appdef.Action) []string {
+	names := make([]string, 0, len(actions))
+	for name := range actions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func updateAppEnabledList(apps []string, appName string, enabled bool) []string {
 	filtered := make([]string, 0, len(apps))
 	for _, existing := range apps {
@@ -673,7 +793,7 @@ func printUsage() {
 	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope init [--force]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope mail domains <list|add|remove> [domain]")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable>")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable|activate|deactivate>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope status")

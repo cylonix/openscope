@@ -136,6 +136,34 @@ PAYLOAD_DIR="$WORK_DIR/payload/Applications"
 mkdir -p "$PAYLOAD_DIR"
 cp -R "$APP_PATH" "$PAYLOAD_DIR/OpenScope.app"
 
+PILOT_DIR="$WORK_DIR/payload/usr/local/lib/openscope/pilot"
+PILOT_CLIENT_DIR="$PILOT_DIR/client"
+mkdir -p "$PILOT_DIR" "$PILOT_CLIENT_DIR/linux-arm64" "$PILOT_CLIENT_DIR/linux-amd64"
+
+cp "$REPO_ROOT/scripts/pilot_test.sh" "$PILOT_DIR/pilot_test.sh"
+cp "$REPO_ROOT/scripts/nemoclaw_pilot_test.sh" "$PILOT_DIR/nemoclaw_pilot_test.sh"
+cp "$REPO_ROOT/scripts/run_nemoclaw_demo_container.sh" "$PILOT_DIR/run_nemoclaw_demo_container.sh"
+cp "$REPO_ROOT/scripts/setup_nemoclaw_demo.sh" "$PILOT_DIR/setup_nemoclaw_demo.sh"
+chmod 755 \
+  "$PILOT_DIR/pilot_test.sh" \
+  "$PILOT_DIR/nemoclaw_pilot_test.sh" \
+  "$PILOT_DIR/run_nemoclaw_demo_container.sh" \
+  "$PILOT_DIR/setup_nemoclaw_demo.sh"
+
+echo "==> Building bundled pilot clients..."
+(
+  cd "$REPO_ROOT"
+  env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+    GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
+    GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+    go build -o "$PILOT_CLIENT_DIR/linux-arm64/openscope" ./cmd/openscope
+  env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+    GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
+    GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+    go build -o "$PILOT_CLIENT_DIR/linux-amd64/openscope" ./cmd/openscope
+)
+chmod 755 "$PILOT_CLIENT_DIR/linux-arm64/openscope" "$PILOT_CLIENT_DIR/linux-amd64/openscope"
+
 # ── Copy installer scripts ────────────────────────────────────────────────────
 SCRIPTS_DIR="$WORK_DIR/scripts"
 mkdir -p "$SCRIPTS_DIR"

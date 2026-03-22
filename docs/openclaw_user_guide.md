@@ -42,13 +42,14 @@ secret API key.
 ## What Works Today
 
 Today, OpenScope includes bundled protected access to Apple Notes and Apple Mail.
+It also bundles common passthrough apps such as Calendar, Reminders, Contacts,
+Safari, and Messages.
 
 That means a novice user can use OpenScope right now to secure OpenClaw's access
 to both apps out of the box.
 
-For apps such as Calendar and other critical local applications, the same security
-model applies, but they need to exist as bundled or user-defined OpenScope apps
-before OpenClaw can use them through `openscope`.
+Those passthrough apps are intentionally denied by default. The user can opt in
+with one privileged activation command instead of falling back to raw `osascript`.
 
 ## Install And Provision OpenScope
 
@@ -114,6 +115,7 @@ If you want to customize access beyond the default:
 ```bash
 sudo openscope policy allow --agent openclaw --app notes --action list_notes --folder Work
 sudo openscope policy allow --agent openclaw --app notes --action read_note --folder Work
+sudo openscope app activate --agent openclaw calendar reminders
 openscope notes blacklist list
 sudo openscope notes blacklist add finance
 openscope mail domains list
@@ -178,8 +180,12 @@ Use this rule of thumb:
 For Notes and Mail, this is already available through the bundled app definitions
 and the default `openclaw` agent.
 
-For Calendar and similar apps, the next step is to add or enable an OpenScope app
-definition for that target, then give `openclaw` a scoped policy for that app.
+For Calendar, Reminders, Contacts, Safari, Messages, and similar apps, the next
+step is usually to activate the bundled passthrough app for `openclaw`:
+
+```bash
+sudo openscope app activate --agent openclaw calendar
+```
 
 ## Common Safe Policy Shapes
 

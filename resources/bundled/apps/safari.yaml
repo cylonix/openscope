@@ -1,0 +1,16 @@
+version: 1
+app:
+  name: safari
+  display_name: Safari
+  executor: applescript
+  description: Brokered passthrough access to Safari
+  security_mode: passthrough
+
+actions:
+  list_tabs:
+    description: List Safari tabs
+    parameters: []
+    output:
+      mode: json
+      schema: tabs
+    script: safari/list_tabs.applescript

@@ -1,0 +1,31 @@
+version: 1
+app:
+  name: reminders
+  display_name: Apple Reminders
+  executor: applescript
+  description: Brokered passthrough access to Apple Reminders
+  security_mode: passthrough
+
+actions:
+  list_lists:
+    description: List reminder lists
+    parameters: []
+    output:
+      mode: json
+      schema: lists
+    script: reminders/list_lists.applescript
+
+  list_reminders:
+    description: List reminders in a specific list
+    parameters:
+      - name: list
+        type: string
+        required: true
+        policy_key: list
+      - name: limit
+        type: integer
+        required: false
+    output:
+      mode: json
+      schema: reminders
+    script: reminders/list_reminders.applescript
