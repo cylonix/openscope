@@ -151,15 +151,17 @@ chmod 755 \
   "$PILOT_DIR/setup_nemoclaw_demo.sh"
 
 echo "==> Building bundled pilot clients..."
+GO_CACHE_ROOT="${ASCOPE_CACHE_ROOT:-$REPO_ROOT/.cache}"
+mkdir -p "$GO_CACHE_ROOT/go-build" "$GO_CACHE_ROOT/go-mod"
 (
   cd "$REPO_ROOT"
   env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-    GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
-    GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+    GOCACHE="$GO_CACHE_ROOT/go-build" \
+    GOMODCACHE="$GO_CACHE_ROOT/go-mod" \
     go build -o "$PILOT_CLIENT_DIR/linux-arm64/openscope" ./cmd/openscope
   env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-    GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
-    GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+    GOCACHE="$GO_CACHE_ROOT/go-build" \
+    GOMODCACHE="$GO_CACHE_ROOT/go-mod" \
     go build -o "$PILOT_CLIENT_DIR/linux-amd64/openscope" ./cmd/openscope
 )
 chmod 755 "$PILOT_CLIENT_DIR/linux-arm64/openscope" "$PILOT_CLIENT_DIR/linux-amd64/openscope"

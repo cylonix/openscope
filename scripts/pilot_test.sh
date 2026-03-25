@@ -136,8 +136,8 @@ find_docker_bin() {
     command -v docker
     return 0
   fi
-  if [ -x "/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
-    echo "/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker"
+  if [ -n "${DOCKER_APP_CANDIDATE:-}" ] && [ -x "${DOCKER_APP_CANDIDATE:-}" ]; then
+    echo "${DOCKER_APP_CANDIDATE}"
     return 0
   fi
   if [ -x "/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
@@ -587,7 +587,7 @@ printf '\n'
 # ══════════════════════════════════════════════════════════════════════════════
 printf "${BOLD}6. NemoClaw Bridge${RESET}\n"
 
-DEMO_ROOT="/Volumes/2TB-1/openscope-nemoclaw-demo"
+DEMO_ROOT="${NEMOCLAW_DEMO_ROOT:-$HOME/openscope-nemoclaw-demo}"
 DOCKER_BIN="$(find_docker_bin || true)"
 if [ -z "$DOCKER_BIN" ]; then
   record SKIP "NemoClaw sandbox test" "docker not installed"

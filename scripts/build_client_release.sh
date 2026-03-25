@@ -44,9 +44,12 @@ ARCHIVE_PATH="$REPO_ROOT/$OUT_DIR/openscope-${VERSION}-${GOOS_TARGET}-${GOARCH_T
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$BIN_DIR"
 
+GO_CACHE_ROOT="${ASCOPE_CACHE_ROOT:-$REPO_ROOT/.cache}"
+mkdir -p "$GO_CACHE_ROOT/go-build" "$GO_CACHE_ROOT/go-mod"
+
 env GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" CGO_ENABLED=0 \
-  GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
-  GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+  GOCACHE="$GO_CACHE_ROOT/go-build" \
+  GOMODCACHE="$GO_CACHE_ROOT/go-mod" \
   go build -o "$BIN_DIR/openscope" ./cmd/openscope
 
 chmod 755 "$BIN_DIR/openscope"

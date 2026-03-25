@@ -1,0 +1,14 @@
+{
+  "id": "cylonix",
+  "name": "Cylonix Peer Messaging",
+  "version": "0.1.0",
+  "description": "OpenClaw channel plugin for sending messages through the local Cylonix app WebSocket proxy.",
+  "channels": [
+    "cylonix"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

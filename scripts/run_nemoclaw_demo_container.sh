@@ -4,18 +4,19 @@
 
 set -euo pipefail
 
-DEMO_ROOT="${1:-/Volumes/2TB-1/openscope-nemoclaw-demo}"
+DEMO_ROOT="${1:-${NEMOCLAW_DEMO_ROOT:-$HOME/openscope-nemoclaw-demo}}"
 IMAGE="${NEMOCLAW_DEMO_IMAGE:-ubuntu:24.04}"
 HOST_RUN_DIR="$HOME/.openscope/run"
 HOST_CFG_DIR="$HOME/.openscope"
 HOST_ADMIN_DIR="/Library/Application Support/OpenScope"
 DEMO_SCRIPTS_DIR="$DEMO_ROOT/scripts"
 DOCKER_BIN="${DOCKER_BIN:-}"
+DOCKER_APP_CANDIDATE="${DOCKER_APP_CANDIDATE:-}"
 if [ -z "$DOCKER_BIN" ]; then
   if command -v docker >/dev/null 2>&1; then
     DOCKER_BIN="$(command -v docker)"
-  elif [ -x "/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
-    DOCKER_BIN="/Volumes/2TB-1/Applications/Docker.app/Contents/Resources/bin/docker"
+  elif [ -n "$DOCKER_APP_CANDIDATE" ] && [ -x "$DOCKER_APP_CANDIDATE" ]; then
+    DOCKER_BIN="$DOCKER_APP_CANDIDATE"
   elif [ -x "/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
     DOCKER_BIN="/Applications/Docker.app/Contents/Resources/bin/docker"
   else

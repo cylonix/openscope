@@ -1,0 +1,27 @@
+{
+  "name": "cylonix",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw channel plugin for the local Cylonix peer-messaging WebSocket",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "cylonix",
+      "label": "Cylonix",
+      "selectionLabel": "Cylonix peer messaging",
+      "docsPath": "/channels/cylonix",
+      "blurb": "Send direct messages through the local Cylonix app proxy.",
+      "aliases": [
+        "peer-message",
+        "peer-messaging"
+      ]
+    },
+    "install": {
+      "localPath": "plugins/cylonix-channel",
+      "defaultChoice": "local"
+    }
+  }
+}

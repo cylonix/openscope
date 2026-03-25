@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-DEMO_ROOT="${1:-/Volumes/2TB-1/openscope-nemoclaw-demo}"
+DEMO_ROOT="${1:-${NEMOCLAW_DEMO_ROOT:-$HOME/openscope-nemoclaw-demo}}"
 SOURCE_PATH="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SOURCE_PATH" ]; do
   LINK_TARGET="$(readlink "$SOURCE_PATH")"
@@ -57,11 +57,13 @@ echo "Provisioning client-only openscope for ${GOOS_TARGET}/${GOARCH_TARGET}"
 if [ -f "$CLIENT_CANDIDATE" ]; then
   cp "$CLIENT_CANDIDATE" "$BIN_DIR/openscope"
 elif [ -d "$REPO_ROOT/cmd/openscope" ]; then
+  GO_CACHE_ROOT="${ASCOPE_CACHE_ROOT:-$REPO_ROOT/.cache}"
+  mkdir -p "$GO_CACHE_ROOT/go-build" "$GO_CACHE_ROOT/go-mod"
   (
     cd "$REPO_ROOT"
     env GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" CGO_ENABLED=0 \
-      GOCACHE=/Volumes/2TB-1/src/ascope/.cache/go-build \
-      GOMODCACHE=/Volumes/2TB-1/src/ascope/.cache/go-mod \
+      GOCACHE="$GO_CACHE_ROOT/go-build" \
+      GOMODCACHE="$GO_CACHE_ROOT/go-mod" \
       go build -o "$BIN_DIR/openscope" ./cmd/openscope
   )
 else
