@@ -4,7 +4,9 @@
 
 set -euo pipefail
 
-DEMO_ROOT="${1:-${NEMOCLAW_DEMO_ROOT:-$HOME/openscope-nemoclaw-demo}}"
+LOCAL_ROOT="${ASCOPE_LOCAL_ROOT:-$HOME}"
+DEFAULT_DEMO_ROOT="$LOCAL_ROOT/openscope-nemoclaw-demo"
+DEMO_ROOT="${1:-${NEMOCLAW_DEMO_ROOT:-$DEFAULT_DEMO_ROOT}}"
 IMAGE="${NEMOCLAW_DEMO_IMAGE:-ubuntu:24.04}"
 HOST_RUN_DIR="$HOME/.openscope/run"
 HOST_CFG_DIR="$HOME/.openscope"
@@ -12,6 +14,12 @@ HOST_ADMIN_DIR="/Library/Application Support/OpenScope"
 DEMO_SCRIPTS_DIR="$DEMO_ROOT/scripts"
 DOCKER_BIN="${DOCKER_BIN:-}"
 DOCKER_APP_CANDIDATE="${DOCKER_APP_CANDIDATE:-}"
+PILOT_ARGS=("${@:2}")
+
+find_translocated_docker() {
+  find /private/var/folders -path '*/AppTranslocation/*/d/Docker.app/Contents/Resources/bin/docker' -print -quit 2>/dev/null || true
+}
+
 if [ -z "$DOCKER_BIN" ]; then
   if command -v docker >/dev/null 2>&1; then
     DOCKER_BIN="$(command -v docker)"
@@ -20,7 +28,7 @@ if [ -z "$DOCKER_BIN" ]; then
   elif [ -x "/Applications/Docker.app/Contents/Resources/bin/docker" ]; then
     DOCKER_BIN="/Applications/Docker.app/Contents/Resources/bin/docker"
   else
-    DOCKER_BIN=""
+    DOCKER_BIN="$(find_translocated_docker)"
   fi
 fi
 
@@ -58,6 +66,12 @@ if [ -t 0 ] && [ -t 1 ]; then
 fi
 
 if [ -n "${OPENSCOPE_HTTP_URL:-}" ]; then
+  INNER_CMD='export PATH=/demo/bin:$PATH; bash /demo/scripts/nemoclaw_pilot_test.sh'
+  if [ ${#PILOT_ARGS[@]} -gt 0 ]; then
+    for arg in "${PILOT_ARGS[@]}"; do
+      INNER_CMD+=" $(printf '%q' "$arg")"
+    done
+  fi
   CMD=( "$DOCKER_BIN" run "${DOCKER_FLAGS[@]}"
     -v "$DEMO_ROOT/bin:/demo/bin:ro"
     -v "$DEMO_SCRIPTS_DIR:/demo/scripts:ro"
@@ -72,7 +86,7 @@ if [ -n "${OPENSCOPE_HTTP_URL:-}" ]; then
   if [ ${#EXTRA_ENVS[@]} -gt 0 ]; then
     CMD+=( "${EXTRA_ENVS[@]}" )
   fi
-  CMD+=( "$IMAGE" /bin/bash -lc 'export PATH=/demo/bin:$PATH; bash /demo/scripts/nemoclaw_pilot_test.sh' )
+  CMD+=( "$IMAGE" /bin/bash -lc "$INNER_CMD" )
   exec "${CMD[@]}"
 fi
 
@@ -80,6 +94,13 @@ if [ ! -S "$HOST_RUN_DIR/openscoped.sock" ]; then
   echo "error: host OpenScope socket not found at $HOST_RUN_DIR/openscoped.sock" >&2
   echo "hint: verify the installed host daemon with: openscope status" >&2
   exit 1
+fi
+
+INNER_CMD='export PATH=/demo/bin:$PATH; bash /demo/scripts/nemoclaw_pilot_test.sh'
+if [ ${#PILOT_ARGS[@]} -gt 0 ]; then
+  for arg in "${PILOT_ARGS[@]}"; do
+    INNER_CMD+=" $(printf '%q' "$arg")"
+  done
 fi
 
 CMD=( "$DOCKER_BIN" run "${DOCKER_FLAGS[@]}"
@@ -97,5 +118,5 @@ fi
 if [ ${#EXTRA_ENVS[@]} -gt 0 ]; then
   CMD+=( "${EXTRA_ENVS[@]}" )
 fi
-CMD+=( "$IMAGE" /bin/bash -lc 'export PATH=/demo/bin:$PATH; bash /demo/scripts/nemoclaw_pilot_test.sh' )
+CMD+=( "$IMAGE" /bin/bash -lc "$INNER_CMD" )
 exec "${CMD[@]}"

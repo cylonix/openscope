@@ -1,0 +1,115 @@
+version: 1
+app:
+  name: ssh
+  display_name: Scoped SSH
+  executor: ssh
+  description: Protected brokered SSH actions for known targets
+  security_mode: protected
+
+actions:
+  check_host:
+    description: Check reachability and basic host identity for a named SSH target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+    output:
+      mode: json
+      schema: ssh_check_host
+    script: check_host
+
+  service_status:
+    description: Read systemd status for an approved service on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: service
+        type: string
+        required: true
+        policy_key: service
+    output:
+      mode: json
+      schema: ssh_service_status
+    script: service_status
+
+  restart_service:
+    description: Restart an approved systemd service on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: service
+        type: string
+        required: true
+        policy_key: service
+    output:
+      mode: json
+      schema: ssh_restart_service
+    script: restart_service
+
+  tail_logs:
+    description: Tail recent logs for an approved systemd service on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: service
+        type: string
+        required: true
+        policy_key: service
+      - name: lines
+        type: integer
+        required: false
+    output:
+      mode: json
+      schema: ssh_tail_logs
+    script: tail_logs
+
+  read_file:
+    description: Read an approved file from a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: path
+        type: string
+        required: true
+        policy_key: path
+    output:
+      mode: json
+      schema: ssh_read_file
+    script: read_file
+
+  list_dir:
+    description: List an approved directory on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: path
+        type: string
+        required: true
+        policy_key: path
+    output:
+      mode: json
+      schema: ssh_list_dir
+    script: list_dir
+
+  host_metrics:
+    description: Read uptime, load, memory, and root disk stats from a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+    output:
+      mode: json
+      schema: ssh_host_metrics
+    script: host_metrics

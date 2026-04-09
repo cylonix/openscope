@@ -26,7 +26,8 @@ Minimum OpenClaw config:
           "enabled": true,
           "url": "ws://127.0.0.1:50321/peer-messaging/v1",
           "token": "test-token",
-          "conversationTitle": "OpenClaw via Cylonix"
+          "conversationTitle": "OpenClaw via Cylonix",
+          "deliveryPolicy": "queue"
         }
       }
     }
@@ -45,3 +46,8 @@ openclaw message send --channel cylonix \
   --target m1.vital-skylark.cylonix.org \
   --message "hello from OpenClaw via Cylonix"
 ```
+
+`deliveryPolicy` can be:
+
+- `drop`: fail immediately if the peer is unavailable
+- `queue`: accept the message locally and let Cylonix retry it later

@@ -1,0 +1,57 @@
+flowchart LR
+    subgraph L["Gateway / Filtering"]
+        direction LR
+
+        subgraph LA[" "]
+            direction TB
+            N1["Raw privileged path<br/>exposed"]:::redNote
+            A1["Agent"]:::neutral
+        end
+
+        G1{"Permit / Deny"}:::neutral
+        T1["Raw privileged tool"]:::redNode
+        R1["Sensitive system"]:::neutral
+        X1["Blocked"]:::neutral
+
+        A1 --> G1
+        G1 -->|Permit| T1
+        G1 -.->|Deny| X1
+        T1 --> R1
+    end
+
+    subgraph R["OpenScope / Brokered Capability"]
+        direction LR
+
+        subgraph RA[" "]
+            direction TB
+            N2["Only scoped access<br/>exposed"]:::greenNote
+            A2["Agent"]:::neutral
+        end
+
+        O1{"Scoped or unscoped?"}:::neutral
+        S2["Scoped action"]:::greenNode
+        X2["Unscoped access<br/>not exposed"]:::neutral
+        R2["Sensitive system"]:::neutral
+
+        A2 --> O1
+        O1 -->|Scoped| S2
+        O1 -.->|Unscoped| X2
+        S2 --> R2
+    end
+
+    linkStyle 0 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 1 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 3 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 4 stroke:#2e7d32,stroke-width:3px,color:#2e7d32
+    linkStyle 5 stroke:#2e7d32,stroke-width:3px,color:#2e7d32
+    linkStyle 6 stroke:#c62828,stroke-width:3px,color:#c62828
+
+    classDef redNote fill:#fff1f1,stroke:#e57373,stroke-width:1px,color:#8a1c1c;
+    classDef greenNote fill:#eef9ee,stroke:#66bb6a,stroke-width:1px,color:#1b5e20;
+    classDef redNode fill:#ffd9d9,stroke:#c62828,stroke-width:2px,color:#111;
+    classDef greenNode fill:#d9f7d6,stroke:#2e7d32,stroke-width:2px,color:#111;
+    classDef neutral fill:#f7f9fc,stroke:#90a4ae,stroke-width:1.5px,color:#111;
+    style L fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style R fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style LA fill:transparent,stroke:transparent
+    style RA fill:transparent,stroke:transparent

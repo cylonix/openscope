@@ -1,0 +1,27 @@
+<svg width="900" height="300" viewBox="0 0 900 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">OpenScope logo</title>
+  <desc id="desc">A simplified aperture icon beside the word OpenScope in teal and cyan.</desc>
+  <defs>
+    <linearGradient id="ring" x1="60" y1="60" x2="260" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#62D6E8"/>
+      <stop offset="0.55" stop-color="#14C7E7"/>
+      <stop offset="1" stop-color="#208BFF"/>
+    </linearGradient>
+    <linearGradient id="word" x1="330" y1="108" x2="690" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F6FBFF"/>
+      <stop offset="0.6" stop-color="#F6FBFF"/>
+      <stop offset="1" stop-color="#14C7E7"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(60 50)">
+    <rect x="0" y="0" width="200" height="200" rx="54" fill="url(#ring)"/>
+    <rect x="42" y="42" width="116" height="116" rx="28" fill="white"/>
+    <rect x="72" y="52" width="56" height="96" rx="16" fill="url(#ring)"/>
+    <rect x="84" y="72" width="32" height="56" rx="10" fill="white"/>
+  </g>
+
+  <text x="330" y="142" fill="url(#word)" font-family="'Big Caslon', 'Book Antiqua', 'Palatino Linotype', Palatino, Georgia, serif" font-size="64" font-weight="700" letter-spacing="-1">OpenScope</text>
+
+  <text x="332" y="188" fill="#8C99A5" font-family="'Big Caslon', 'Book Antiqua', 'Palatino Linotype', Palatino, Georgia, serif" font-size="22" letter-spacing="0.5">scoped, not open-ended</text>
+</svg>

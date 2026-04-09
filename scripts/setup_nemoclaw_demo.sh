@@ -117,3 +117,4 @@ echo "  workspace     : $WORK_DIR"
 echo
 echo "No OpenScope app rebuild is required for this script itself."
 echo "The demo bundle uses packaged pilot assets when available."
+echo "For Docker Desktop on macOS, prefer scripts/run_nemoclaw_http_bridge_test.sh over raw socket mode."

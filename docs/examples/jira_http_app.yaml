@@ -1,0 +1,62 @@
+version: 1
+app:
+  name: jira
+  display_name: Jira
+  executor: http
+  description: Scoped Jira access over broker-owned HTTP profiles
+  security_mode: protected
+
+actions:
+  get_issue:
+    description: Read a Jira issue by key
+    parameters:
+      - name: profile
+        type: string
+        required: true
+        policy_key: profile
+      - name: issue
+        type: string
+        required: true
+        policy_key: issue
+      - name: query.fields
+        type: string
+        required: false
+    output:
+      mode: json
+      schema: jira_issue
+    script: GET /rest/api/3/issue/{issue}
+
+  search_issues:
+    description: Search Jira with a constrained JQL query
+    parameters:
+      - name: profile
+        type: string
+        required: true
+        policy_key: profile
+      - name: query.jql
+        type: string
+        required: true
+        policy_key: jql
+      - name: query.maxResults
+        type: integer
+        required: false
+    output:
+      mode: json
+      schema: jira_search
+    script: GET /rest/api/3/search/jql
+
+  list_comments:
+    description: List comments for a Jira issue
+    parameters:
+      - name: profile
+        type: string
+        required: true
+        policy_key: profile
+      - name: issue
+        type: string
+        required: true
+        policy_key: issue
+    output:
+      mode: json
+      schema: jira_comments
+    script: GET /rest/api/3/issue/{issue}/comment

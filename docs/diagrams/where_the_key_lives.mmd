@@ -1,0 +1,53 @@
+flowchart LR
+    subgraph L["Gateway / Filtering"]
+        direction LR
+
+        subgraph LA[" "]
+            direction TB
+            N1["Key can still be reached<br/>through raw tool path"]:::redNote
+            A1["Agent"]:::neutral
+        end
+
+        T1["Raw privileged tool"]:::redNode
+        K1["Key / secret / permission"]:::redNode
+        R1["Sensitive system"]:::neutral
+
+        A1 --> T1
+        K1 --> T1
+        T1 --> R1
+    end
+
+    subgraph R["OpenScope / Brokered Capability"]
+        direction LR
+
+        subgraph RA[" "]
+            direction TB
+            N2["Key stays inside broker"]:::greenNote
+            A2["Agent"]:::neutral
+        end
+
+        B2["OpenScope broker"]:::greenNode
+        K2["Key / secret / permission"]:::greenNode
+        R2["Sensitive system"]:::neutral
+
+        A2 --> B2
+        K2 --> B2
+        B2 --> R2
+    end
+
+    linkStyle 0 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 1 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 2 stroke:#c62828,stroke-width:3px,color:#c62828
+    linkStyle 3 stroke:#2e7d32,stroke-width:3px,color:#2e7d32
+    linkStyle 4 stroke:#2e7d32,stroke-width:3px,color:#2e7d32
+    linkStyle 5 stroke:#c62828,stroke-width:3px,color:#c62828
+
+    classDef redNote fill:#fff1f1,stroke:#e57373,stroke-width:1px,color:#8a1c1c;
+    classDef greenNote fill:#eef9ee,stroke:#66bb6a,stroke-width:1px,color:#1b5e20;
+    classDef redNode fill:#ffd9d9,stroke:#c62828,stroke-width:2px,color:#111;
+    classDef greenNode fill:#d9f7d6,stroke:#2e7d32,stroke-width:2px,color:#111;
+    classDef neutral fill:#f7f9fc,stroke:#90a4ae,stroke-width:1.5px,color:#111;
+    style L fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style R fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style LA fill:transparent,stroke:transparent
+    style RA fill:transparent,stroke:transparent

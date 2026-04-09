@@ -120,6 +120,16 @@ openscope mail domains list
 sudo openscope mail domains add mycompany.com
 sudo openscope mail domains remove gmail.com
 
+# Root-owned HTTP profiles
+openscope http profiles list
+sudo openscope http profiles add --name jira-work --base-url https://example.atlassian.net --headers "Authorization=Basic <token>,Accept=application/json"
+sudo openscope http profiles remove jira-work
+
+# Root-owned SSH targets
+openscope ssh targets list
+sudo openscope ssh targets add --alias prod-api-1 --host prod-api-1.internal --user deploy --services web --path-prefixes /var/log/app
+sudo openscope ssh targets remove prod-api-1
+
 # Diagnostics
 openscope status
 openscope doctor
@@ -146,6 +156,11 @@ OpenScope also enforces a root-owned protected-folder blacklist in
 `/Library/Application Support/OpenScope/protected_folders.yaml`. By default,
 folders whose names contain `private` or `hidden` are denied even if the user
 policy would otherwise allow them.
+
+For brokered HTTP integrations such as Jira, root-owned HTTP profiles live in
+`/Library/Application Support/OpenScope/http_profiles.yaml`. For brokered SSH
+integrations, named targets live in
+`/Library/Application Support/OpenScope/ssh_targets.yaml`.
 
 For Mail, the default `openclaw` policy is read-only and constrained to the
 `Inbox` mailbox. No attachment access is provided in the bundled app, and you can
@@ -178,6 +193,8 @@ defaults, run `openscope init --force`.
 4. Enable it: `openscope app enable myapp`
 
 Bundled apps (like `notes`) are always enabled and live in [`resources/bundled/`](resources/bundled/).
+
+For a worked example of a custom HTTP-backed app, see [`docs/jira_over_http.md`](docs/jira_over_http.md).
 
 ## macOS Automation Permission
 

@@ -6,6 +6,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openscope/openscope/appdef"
@@ -182,6 +183,56 @@ func TestServiceHandleMailDomainFiltering(t *testing.T) {
 	})
 	if response.OK {
 		t.Fatalf("expected blocked sender domain to be denied, got %#v", response)
+	}
+}
+
+func TestServiceHandleSSHRequestAuditsTargetAndService(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{
+		ConfigDir:            filepath.Join(home, ".openscope"),
+		AppsDir:              filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:               filepath.Join(home, ".openscope", "run"),
+		StateDir:             filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:         filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:           filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:            filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile:      filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:           filepath.Join(home, ".openscope", "run", "openscoped.sock"),
+		AdminDir:             filepath.Join(home, "admin"),
+		ProtectedFoldersFile: filepath.Join(home, "admin", "protected_folders.yaml"),
+		MailFiltersFile:      filepath.Join(home, "admin", "mail_filters.yaml"),
+		SSHTargetsFile:       filepath.Join(home, "admin", "ssh_targets.yaml"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("EnsureLayout returned error: %v", err)
+	}
+
+	writeFile(t, paths.AgentsFile, "version: 1\nagents:\n  - openclaw\n")
+	writeFile(t, paths.PoliciesFile, "version: 1\nrules:\n  - effect: allow\n    agent: openclaw\n    app: ssh\n    action: tail_logs\n    constraints:\n      target: prod-api-1\n      service: web\n")
+
+	service := NewService(paths)
+	service.Executors["ssh"] = stubExecutor{
+		result: executor.Result{Stdout: `{"target":"prod-api-1","service":"web","lines":20,"output":"ok"}`},
+	}
+
+	response := service.Handle(ipc.Request{
+		App:    "ssh",
+		Action: "tail_logs",
+		Agent:  "openclaw",
+		Params: map[string]string{"target": "prod-api-1", "service": "web", "lines": "20"},
+		Mode:   "json",
+	})
+	if !response.OK {
+		t.Fatalf("expected OK response, got %#v", response)
+	}
+
+	auditData, err := os.ReadFile(paths.AuditFile)
+	if err != nil {
+		t.Fatalf("ReadFile(audit) returned error: %v", err)
+	}
+	text := string(auditData)
+	if !strings.Contains(text, `"target":"prod-api-1"`) || !strings.Contains(text, `"service":"web"`) {
+		t.Fatalf("expected audit to include target and service, got:\n%s", text)
 	}
 }
 

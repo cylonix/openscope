@@ -1,13 +1,38 @@
 import crypto from "node:crypto";
 import net from "node:net";
+import { createPluginRuntimeStore } from "openclaw/plugin-sdk/compat";
 
 const DEFAULT_URL = "ws://127.0.0.1:50321/peer-messaging/v1";
 const DEFAULT_ACCOUNT_ID = "default";
 const DEFAULT_TITLE = "OpenClaw via Cylonix";
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_TOKEN = "test-token";
+const DEFAULT_DELIVERY_POLICY = "drop";
 const CHANNEL_ID = "cylonix";
 const TARGET_PREFIXES = new Set(["user", "peer", "device", "conversation", "direct"]);
+const { setRuntime: setCylonixRuntime, getRuntime: getCylonixRuntime } =
+  createPluginRuntimeStore("Cylonix runtime not initialized");
+
+function waitForAbort(signal, cleanup) {
+  if (!signal) {
+    return new Promise(() => {});
+  }
+  if (signal.aborted) {
+    cleanup?.();
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      try {
+        cleanup?.();
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function listAccountIds(cfg) {
   const accounts = cfg?.channels?.cylonix?.accounts ?? {};
@@ -56,6 +81,11 @@ function normalizeTarget(rawTarget) {
 
 function sendJson(ws, value) {
   ws.sendText(JSON.stringify(value));
+}
+
+function normalizeDeliveryPolicy(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "queue" ? "queue" : DEFAULT_DELIVERY_POLICY;
 }
 
 function looksLikePeerTarget(target) {
@@ -330,11 +360,25 @@ async function waitForMatchingEvent(ws, eventName, timeoutMs, predicate) {
   }
 }
 
-async function sendViaCylonix({ account, target, text, logger }) {
+async function connectAuthenticatedClient(account) {
   const url = account?.url || DEFAULT_URL;
   const token = account?.token || DEFAULT_TOKEN;
-  const conversationTitle = account?.conversationTitle || DEFAULT_TITLE;
   const timeoutMs = Number(account?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const ws = await openWebSocket(url, timeoutMs);
+  sendJson(ws, {
+    type: "authenticate",
+    payload: {
+      token
+    }
+  });
+  await waitForEvent(ws, "authenticated", timeoutMs);
+  await waitForEvent(ws, "sync_snapshot", timeoutMs);
+  return { ws, url, timeoutMs };
+}
+
+async function sendViaCylonix({ account, target, text, logger }) {
+  const conversationTitle = account?.conversationTitle || DEFAULT_TITLE;
+  const deliveryPolicy = normalizeDeliveryPolicy(account?.deliveryPolicy);
   const resolvedTarget = normalizeTarget(target);
 
   if (!resolvedTarget) {
@@ -344,24 +388,15 @@ async function sendViaCylonix({ account, target, text, logger }) {
     throw new Error("message text is required");
   }
 
+  const { ws, url, timeoutMs } = await connectAuthenticatedClient(account);
   logger?.info?.(`cylonix: sending to ${resolvedTarget} via ${url}`);
-
-  const ws = await openWebSocket(url, timeoutMs);
   try {
-    sendJson(ws, {
-      type: "authenticate",
-      payload: {
-        token
-      }
-    });
-    await waitForEvent(ws, "authenticated", timeoutMs);
-    await waitForEvent(ws, "sync_snapshot", timeoutMs);
-
     sendJson(ws, {
       type: "send_message",
       payload: {
         conversation_id: resolvedTarget,
         conversation_title: conversationTitle,
+        delivery_policy: deliveryPolicy,
         text: String(text)
       }
     });
@@ -411,6 +446,211 @@ const plugin = {
     listAccountIds,
     resolveAccount
   },
+  gateway: {
+    startAccount: async (ctx) => {
+      const account = resolveAccount(ctx?.cfg ?? {}, ctx?.accountId);
+      if (!account) {
+        ctx.log?.warn?.(`cylonix: account ${ctx?.accountId ?? DEFAULT_ACCOUNT_ID} is not enabled`);
+        return waitForAbort(ctx.abortSignal);
+      }
+
+      const runtime = getCylonixRuntime();
+      const runtimeReply = runtime?.channel?.reply;
+      const finalizeInboundContext = runtimeReply?.finalizeInboundContext;
+      const dispatchReplyWithBufferedBlockDispatcher =
+        runtimeReply?.dispatchReplyWithBufferedBlockDispatcher;
+      if (
+        typeof finalizeInboundContext !== "function" ||
+        typeof dispatchReplyWithBufferedBlockDispatcher !== "function"
+      ) {
+        ctx.log?.warn?.("cylonix: inbound runtime is unavailable; channel will stay outbound-only");
+        return waitForAbort(ctx.abortSignal);
+      }
+
+      let ws;
+      let stopped = false;
+      const seenMessageIds = new Set();
+      const accountId = ctx.accountId ?? DEFAULT_ACCOUNT_ID;
+      const closeSocket = async () => {
+        if (!ws) {
+          return;
+        }
+        const current = ws;
+        ws = undefined;
+        try {
+          await current.close();
+        } catch {}
+      };
+
+      ctx.setStatus({
+        ...ctx.getStatus(),
+        accountId,
+        running: true,
+        connected: false,
+        lastStartAt: Date.now(),
+        lastError: null,
+      });
+
+      try {
+        const connected = await connectAuthenticatedClient(account);
+        ws = connected.ws;
+        ctx.log?.info?.(`cylonix: connected inbound listener via ${connected.url}`);
+        ctx.setStatus({
+          ...ctx.getStatus(),
+          accountId,
+          running: true,
+          connected: true,
+          lastConnectedAt: Date.now(),
+          lastError: null,
+        });
+
+        const stopPromise = waitForAbort(ctx.abortSignal, () => {
+          stopped = true;
+          void closeSocket();
+        });
+
+        const pumpPromise = (async () => {
+          while (!stopped) {
+            let frame;
+            try {
+              frame = await ws.receiveFrame(24 * 60 * 60 * 1000);
+            } catch (error) {
+              const message = String(error?.message ?? error ?? "");
+              if (message.includes("timed out waiting for websocket frame")) {
+                continue;
+              }
+              throw error;
+            }
+            if (frame?.opcode !== 0x1) {
+              continue;
+            }
+            const event = JSON.parse(frame.payload.toString("utf8"));
+            if (event?.type === "error") {
+              throw new Error(event?.payload?.message ?? event?.message ?? JSON.stringify(event));
+            }
+            if (event?.type !== "message_received") {
+              continue;
+            }
+
+            const payload = event?.payload ?? {};
+            const message = payload?.message ?? {};
+            const messageId = String(event?.message_id ?? message?.id ?? "");
+            if (messageId) {
+              if (seenMessageIds.has(messageId)) {
+                continue;
+              }
+              seenMessageIds.add(messageId);
+              if (seenMessageIds.size > 200) {
+                const first = seenMessageIds.values().next().value;
+                seenMessageIds.delete(first);
+              }
+            }
+
+            const text = String(message?.text ?? "").trim();
+            const senderId = String(payload?.from_peer_id ?? "").trim();
+            const senderName = String(payload?.from_peer_name ?? "").trim();
+            const chatId = normalizeTarget(senderId || event?.conversation_id || payload?.conversation_id);
+            if (!text || !chatId) {
+              continue;
+            }
+            const sessionKey = `cylonix-${accountId}-${chatId}`.toLowerCase();
+
+            ctx.log?.info?.(`cylonix inbound: from=${chatId} len=${text.length}`);
+            ctx.setStatus({
+              ...ctx.getStatus(),
+              accountId,
+              running: true,
+              connected: true,
+              lastInboundAt: Date.now(),
+              lastEventAt: Date.now(),
+              lastMessageAt: Date.now(),
+              lastError: null,
+            });
+
+            const msgCtx = finalizeInboundContext({
+              Body: text,
+              RawBody: text,
+              CommandBody: text,
+              From: `cylonix:${senderId || chatId}`,
+              To: `cylonix:${chatId}`,
+              SessionKey: sessionKey,
+              AccountId: accountId,
+              OriginatingChannel: CHANNEL_ID,
+              OriginatingTo: `cylonix:${chatId}`,
+              ChatType: "direct",
+              SenderName: senderName || undefined,
+              SenderId: senderId || chatId,
+              Provider: CHANNEL_ID,
+              Surface: CHANNEL_ID,
+              ConversationLabel: senderName || chatId,
+              Timestamp: Date.now(),
+              CommandAuthorized: false,
+            });
+            await dispatchReplyWithBufferedBlockDispatcher({
+              ctx: msgCtx,
+              cfg: runtime.config.loadConfig(),
+              dispatcherOptions: {
+                deliver: async (replyPayload) => {
+                  const responseText = replyPayload?.text ?? replyPayload?.body;
+                  if (!responseText || !String(responseText).trim()) {
+                    return;
+                  }
+                  await sendViaCylonix({
+                    account,
+                    target: senderId || chatId,
+                    text: responseText,
+                    logger: ctx.log,
+                  });
+                  ctx.setStatus({
+                    ...ctx.getStatus(),
+                    accountId,
+                    running: true,
+                    connected: true,
+                    lastOutboundAt: Date.now(),
+                    lastEventAt: Date.now(),
+                    lastMessageAt: Date.now(),
+                    lastError: null,
+                  });
+                },
+                onReplyStart: () => {
+                  ctx.log?.info?.(`cylonix reply started for ${chatId}`);
+                },
+              },
+            });
+          }
+        })().catch((error) => {
+          if (stopped) {
+            return;
+          }
+          throw error;
+        });
+
+        await Promise.race([pumpPromise, stopPromise]);
+      } catch (error) {
+        const message = String(error?.message ?? error ?? "unknown cylonix listener error");
+        ctx.log?.error?.(`cylonix: inbound listener stopped: ${message}`);
+        ctx.setStatus({
+          ...ctx.getStatus(),
+          accountId,
+          running: false,
+          connected: false,
+          lastStopAt: Date.now(),
+          lastError: message,
+        });
+        throw error;
+      } finally {
+        stopped = true;
+        await closeSocket();
+        ctx.setStatus({
+          ...ctx.getStatus(),
+          accountId,
+          running: false,
+          connected: false,
+          lastStopAt: Date.now(),
+        });
+      }
+    },
+  },
   outbound: {
     deliveryMode: "direct",
     sendText: async (ctx) => {
@@ -427,5 +667,6 @@ const plugin = {
 };
 
 export default function register(api) {
+  setCylonixRuntime(api.runtime);
   api.registerChannel({ plugin });
 }

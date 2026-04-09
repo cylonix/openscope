@@ -12,23 +12,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/config"
 )
 
 type Report struct {
-	OK              bool       `json:"ok"`
-	ConfigDirExists bool       `json:"config_dir_exists"`
-	DaemonRunning   bool       `json:"daemon_running"`
-	AsapplePath     string     `json:"asapple_path,omitempty"`
-	AsappleSigned   bool       `json:"asapple_signed"`
-	NotesAccess     NotesCheck `json:"notes_access"`
-	Hints           []string   `json:"hints,omitempty"`
+	OK                 bool        `json:"ok"`
+	ConfigDirExists    bool        `json:"config_dir_exists"`
+	DaemonRunning      bool        `json:"daemon_running"`
+	AsapplePath        string      `json:"asapple_path,omitempty"`
+	AsappleSigned      bool        `json:"asapple_signed"`
+	NotesAccess        NotesCheck  `json:"notes_access"`
+	SSHTargetsConfig   ConfigCheck `json:"ssh_targets_config"`
+	HTTPProfilesConfig ConfigCheck `json:"http_profiles_config"`
+	Hints              []string    `json:"hints,omitempty"`
 }
 
 type NotesCheck struct {
 	Checked bool   `json:"checked"`
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
+}
+
+type ConfigCheck struct {
+	Checked bool   `json:"checked"`
+	Present bool   `json:"present"`
+	OK      bool   `json:"ok"`
+	Count   int    `json:"count,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 func Run(paths config.Paths) Report {
@@ -71,11 +83,23 @@ func Run(paths config.Paths) Report {
 		hints = append(hints, "then re-run any Notes action to trigger the macOS approval prompt")
 	}
 
+	report.SSHTargetsConfig = checkSSHTargetsConfig(paths)
+	if !report.SSHTargetsConfig.OK {
+		hints = append(hints, "ssh targets config is invalid — fix /Library/Application Support/OpenScope/ssh_targets.yaml or remove the broken file")
+	}
+
+	report.HTTPProfilesConfig = checkHTTPProfilesConfig(paths)
+	if !report.HTTPProfilesConfig.OK {
+		hints = append(hints, "http profiles config is invalid — fix /Library/Application Support/OpenScope/http_profiles.yaml or remove the broken file")
+	}
+
 	report.Hints = hints
 	report.OK = report.ConfigDirExists &&
 		report.DaemonRunning &&
 		report.AsappleSigned &&
-		report.NotesAccess.OK
+		report.NotesAccess.OK &&
+		report.SSHTargetsConfig.OK &&
+		report.HTTPProfilesConfig.OK
 
 	return report
 }
@@ -149,4 +173,48 @@ func checkNotesAccess(asapplePath string) NotesCheck {
 		return NotesCheck{Checked: true, OK: false, Error: msg}
 	}
 	return NotesCheck{Checked: true, OK: true}
+}
+
+func checkSSHTargetsConfig(paths config.Paths) ConfigCheck {
+	_, err := os.Stat(paths.SSHTargetsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ConfigCheck{Checked: true, Present: false, OK: true, Source: paths.SSHTargetsFile}
+		}
+		return ConfigCheck{Checked: true, Present: false, OK: false, Source: paths.SSHTargetsFile, Error: err.Error()}
+	}
+
+	targets, err := admin.LoadSSHTargets(paths.SSHTargetsFile)
+	if err != nil {
+		return ConfigCheck{Checked: true, Present: true, OK: false, Source: paths.SSHTargetsFile, Error: err.Error()}
+	}
+	return ConfigCheck{
+		Checked: true,
+		Present: true,
+		OK:      true,
+		Count:   len(targets.Targets),
+		Source:  paths.SSHTargetsFile,
+	}
+}
+
+func checkHTTPProfilesConfig(paths config.Paths) ConfigCheck {
+	_, err := os.Stat(paths.HTTPProfilesFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ConfigCheck{Checked: true, Present: false, OK: true, Source: paths.HTTPProfilesFile}
+		}
+		return ConfigCheck{Checked: true, Present: false, OK: false, Source: paths.HTTPProfilesFile, Error: err.Error()}
+	}
+
+	profiles, err := admin.LoadHTTPProfiles(paths.HTTPProfilesFile)
+	if err != nil {
+		return ConfigCheck{Checked: true, Present: true, OK: false, Source: paths.HTTPProfilesFile, Error: err.Error()}
+	}
+	return ConfigCheck{
+		Checked: true,
+		Present: true,
+		OK:      true,
+		Count:   len(profiles.Profiles),
+		Source:  paths.HTTPProfilesFile,
+	}
 }

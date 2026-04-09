@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph R["OpenScope / Brokered Capability"]
+        direction TB
+        N2["No raw privileged interface exposed"]:::greenNote
+        A2["Scoped action only"]:::greenNode
+        B2["Smaller attack surface"]:::greenNode
+        C2["Harder to bypass"]:::greenNode
+
+        A2 --> B2
+        B2 --> C2
+    end
+
+    classDef greenNote fill:#eef9ee,stroke:#66bb6a,stroke-width:1px,color:#1b5e20;
+    classDef greenNode fill:#d9f7d6,stroke:#2e7d32,stroke-width:2px,color:#111;
+    style R fill:transparent,stroke:#cbd5e1,stroke-width:1px

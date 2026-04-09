@@ -1,0 +1,31 @@
+flowchart LR
+    subgraph L["Gateway / Filtering"]
+        direction TB
+        N1["Security depends on complete coverage"]:::redNote
+        A1["Raw tool"]:::redNode
+        B1["Alternate path"]:::redNode
+        C1["Side channel"]:::redNode
+        D1["Bypass risk"]:::redNode
+
+        A1 --> D1
+        B1 --> D1
+        C1 --> D1
+    end
+
+    subgraph R["OpenScope / Brokered Capability"]
+        direction TB
+        N2["No raw privileged interface exposed"]:::greenNote
+        A2["Scoped action only"]:::greenNode
+        B2["Smaller attack surface"]:::greenNode
+        C2["Harder to bypass"]:::greenNode
+
+        A2 --> B2
+        B2 --> C2
+    end
+
+    classDef redNote fill:#fff1f1,stroke:#e57373,stroke-width:1px,color:#8a1c1c;
+    classDef greenNote fill:#eef9ee,stroke:#66bb6a,stroke-width:1px,color:#1b5e20;
+    classDef redNode fill:#ffd9d9,stroke:#c62828,stroke-width:2px,color:#111;
+    classDef greenNode fill:#d9f7d6,stroke:#2e7d32,stroke-width:2px,color:#111;
+    style L fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style R fill:transparent,stroke:#cbd5e1,stroke-width:1px

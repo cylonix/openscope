@@ -11,6 +11,7 @@ bin/
 dist/
 dist/export/
 dist/*.pkg
+web/
 
 # Local script caches
 scripts/__pycache__/
@@ -20,3 +21,14 @@ scripts/__pycache__/
 
 # Claude Code local config (machine-specific)
 .claude/settings.local.json
+
+# Codex local notes (machine-specific, untracked)
+.codex-local/
+
+# Docs artifacts
+docs/diagrams/*.pdf
+docs/diagrams/*.key
+docs/*.pdf
+
+*.tar
+deploy/

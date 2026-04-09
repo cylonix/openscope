@@ -1,0 +1,38 @@
+flowchart LR
+    subgraph L["Gateway / Filtering"]
+        direction LR
+        A1["Agent"]:::neutral
+        G1["Inline gateway"]:::neutral
+        T1["Raw tool / MCP / API"]:::redNode
+        R1["Sensitive system"]:::neutral
+
+        A1 --> G1
+        G1 --> T1
+        T1 --> R1
+    end
+
+    subgraph R["OpenScope / Brokered Capability"]
+        direction LR
+        A2["Agent"]:::neutral
+        B2["OpenScope broker"]:::greenNode
+        C2["Scoped capability<br/>read_note / restart_service / refund_payment"]:::greenNode
+        R2["Sensitive system"]:::neutral
+
+        A2 --> B2
+        B2 --> C2
+        C2 --> R2
+    end
+
+    X1["Inspect and filter raw power"]:::redNote
+    X2["Contain keys and expose narrow actions"]:::greenNote
+
+    L --> X1
+    R --> X2
+
+    classDef redNote fill:#fff1f1,stroke:#e57373,stroke-width:1px,color:#8a1c1c;
+    classDef greenNote fill:#eef9ee,stroke:#66bb6a,stroke-width:1px,color:#1b5e20;
+    classDef redNode fill:#ffd9d9,stroke:#c62828,stroke-width:2px,color:#111;
+    classDef greenNode fill:#d9f7d6,stroke:#2e7d32,stroke-width:2px,color:#111;
+    classDef neutral fill:#f7f9fc,stroke:#90a4ae,stroke-width:1.5px,color:#111;
+    style L fill:transparent,stroke:#cbd5e1,stroke-width:1px
+    style R fill:transparent,stroke:#cbd5e1,stroke-width:1px

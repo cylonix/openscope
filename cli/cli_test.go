@@ -150,3 +150,29 @@ func TestApplyBundledPassthroughActivationAddsAndRemovesRules(t *testing.T) {
 		t.Fatalf("expected no rules after deactivation, got %#v", pf.Rules)
 	}
 }
+
+func TestLoadBundledDefinitionsIncludesSSH(t *testing.T) {
+	defs, err := loadBundledDefinitions()
+	if err != nil {
+		t.Fatalf("loadBundledDefinitions returned error: %v", err)
+	}
+
+	found := false
+	for _, def := range defs {
+		if def.App.Name == "ssh" {
+			found = true
+			if def.App.Executor != "ssh" {
+				t.Fatalf("expected ssh executor, got %#v", def.App)
+			}
+			if def.App.SecurityMode != "protected" {
+				t.Fatalf("expected protected security mode, got %#v", def.App)
+			}
+			if _, ok := def.Actions["restart_service"]; !ok {
+				t.Fatalf("expected restart_service action in ssh manifest")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected bundled ssh app definition")
+	}
+}

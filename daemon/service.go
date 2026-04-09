@@ -16,6 +16,8 @@ import (
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
 	appleexec "github.com/openscope/openscope/executor/applescript"
+	"github.com/openscope/openscope/executor/httpexec"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
@@ -47,6 +49,8 @@ func NewService(paths config.Paths) Service {
 		Paths: paths,
 		Executors: map[string]executor.Runner{
 			"applescript": appleexec.Executor{},
+			"http":        httpexec.Executor{Paths: paths},
+			"ssh":         sshexec.Executor{Paths: paths},
 		},
 	}
 }

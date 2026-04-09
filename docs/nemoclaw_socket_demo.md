@@ -142,8 +142,9 @@ If your internal disk is tight, keep Colima state on the external volume.
 Example:
 
 ```bash
-mkdir -p /Volumes/2TB-1/colima/openshell
-mkdir -p /Volumes/2TB-1/openscope-nemoclaw-demo
+export ASCOPE_LOCAL_ROOT="${ASCOPE_LOCAL_ROOT:-$HOME/ascope-local}"
+mkdir -p "$ASCOPE_LOCAL_ROOT/colima/openshell"
+mkdir -p "$ASCOPE_LOCAL_ROOT/openscope-nemoclaw-demo"
 ```
 
 The repo includes helper scripts under `scripts/` to prepare a client-only demo
@@ -152,7 +153,7 @@ bundle and wrapper commands for this external-volume layout.
 Recommended host-side demo root:
 
 ```text
-/Volumes/2TB-1/openscope-nemoclaw-demo/
+$ASCOPE_LOCAL_ROOT/openscope-nemoclaw-demo/
   bin/              # linux openscope client build
   workspace/        # mounted sandbox workspace
   env.sh            # exported OPENSCOPE_* variables

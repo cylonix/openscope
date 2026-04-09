@@ -144,6 +144,7 @@ find_docker_bin() {
     echo "/Applications/Docker.app/Contents/Resources/bin/docker"
     return 0
   fi
+  find /private/var/folders -path '*/AppTranslocation/*/d/Docker.app/Contents/Resources/bin/docker' -print -quit 2>/dev/null || true
   return 1
 }
 
@@ -278,6 +279,9 @@ printf "${BOLD}3. Configuration${RESET}\n"
 
 CONFIG="$HOME/.openscope"
 PROTECTED_FOLDERS_FILE="/Library/Application Support/OpenScope/protected_folders.yaml"
+MAIL_FILTERS_FILE="/Library/Application Support/OpenScope/mail_filters.yaml"
+HTTP_PROFILES_FILE="/Library/Application Support/OpenScope/http_profiles.yaml"
+SSH_TARGETS_FILE="/Library/Application Support/OpenScope/ssh_targets.yaml"
 
 # 3.1 openclaw agent registered
 AGENTS_FILE="$CONFIG/agents.yaml"
@@ -385,7 +389,6 @@ else
   print_status FAIL "Protected folder blacklist" "file missing"
 fi
 
-MAIL_FILTERS_FILE="/Library/Application Support/OpenScope/mail_filters.yaml"
 if [ -f "$MAIL_FILTERS_FILE" ]; then
   record PASS "Mail filters config" "$MAIL_FILTERS_FILE"
   print_status PASS "Mail filters config" "installed"
@@ -393,6 +396,46 @@ if [ -f "$MAIL_FILTERS_FILE" ]; then
 else
   record FAIL "Mail filters config" "$MAIL_FILTERS_FILE not found"
   print_status FAIL "Mail filters config" "file missing"
+fi
+
+HTTP_PROFILES_JSON=$(openscope http profiles list 2>&1 || true)
+HTTP_PROFILES_COUNT=$(json_extract "$HTTP_PROFILES_JSON" "print(len(d.get('profiles', [])))")
+HTTP_PROFILES_SOURCE=$(json_extract "$HTTP_PROFILES_JSON" "print(d.get('source', '?'))")
+if [ "$HTTP_PROFILES_COUNT" != "(parse error)" ]; then
+  if [ -f "$HTTP_PROFILES_FILE" ]; then
+    record PASS "HTTP profiles config" "$HTTP_PROFILES_COUNT profile(s)"
+    print_status PASS "HTTP profiles config" "$HTTP_PROFILES_COUNT profile(s)"
+    show_evidence "$(cat "$HTTP_PROFILES_FILE")"
+  else
+    record PASS "HTTP profiles config" "optional file not configured"
+    print_status PASS "HTTP profiles config" "0 profile(s); optional"
+    show_evidence "$HTTP_PROFILES_JSON
+source: $HTTP_PROFILES_SOURCE"
+  fi
+else
+  record FAIL "HTTP profiles config" "openscope http profiles list did not return valid JSON"
+  print_status FAIL "HTTP profiles config" "list command failed"
+  show_evidence "$HTTP_PROFILES_JSON"
+fi
+
+SSH_TARGETS_JSON=$(openscope ssh targets list 2>&1 || true)
+SSH_TARGETS_COUNT=$(json_extract "$SSH_TARGETS_JSON" "print(len(d.get('targets', [])))")
+SSH_TARGETS_SOURCE=$(json_extract "$SSH_TARGETS_JSON" "print(d.get('source', '?'))")
+if [ "$SSH_TARGETS_COUNT" != "(parse error)" ]; then
+  if [ -f "$SSH_TARGETS_FILE" ]; then
+    record PASS "SSH targets config" "$SSH_TARGETS_COUNT target(s)"
+    print_status PASS "SSH targets config" "$SSH_TARGETS_COUNT target(s)"
+    show_evidence "$(cat "$SSH_TARGETS_FILE")"
+  else
+    record PASS "SSH targets config" "optional file not configured"
+    print_status PASS "SSH targets config" "0 target(s); optional"
+    show_evidence "$SSH_TARGETS_JSON
+source: $SSH_TARGETS_SOURCE"
+  fi
+else
+  record FAIL "SSH targets config" "openscope ssh targets list did not return valid JSON"
+  print_status FAIL "SSH targets config" "list command failed"
+  show_evidence "$SSH_TARGETS_JSON"
 fi
 
 # 3.5 Notes Automation permission (TCC)

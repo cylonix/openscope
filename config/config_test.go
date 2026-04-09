@@ -87,6 +87,12 @@ func TestDefaultPathsUsesAdminDirOverride(t *testing.T) {
 	if got, want := paths.MailFiltersFile, filepath.Join("/tmp/openscope-admin", "mail_filters.yaml"); got != want {
 		t.Fatalf("MailFiltersFile = %q, want %q", got, want)
 	}
+	if got, want := paths.HTTPProfilesFile, filepath.Join("/tmp/openscope-admin", "http_profiles.yaml"); got != want {
+		t.Fatalf("HTTPProfilesFile = %q, want %q", got, want)
+	}
+	if got, want := paths.SSHTargetsFile, filepath.Join("/tmp/openscope-admin", "ssh_targets.yaml"); got != want {
+		t.Fatalf("SSHTargetsFile = %q, want %q", got, want)
+	}
 }
 
 func TestEnsureLayoutCreatesOverrideDirs(t *testing.T) {

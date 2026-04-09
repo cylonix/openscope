@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/openscope/openscope/admin"
@@ -43,6 +44,12 @@ func Run(args []string) int {
 	}
 	if args[0] == "mail" && len(args) > 1 && args[1] == "domains" {
 		return runMailDomains(paths, args[2:])
+	}
+	if args[0] == "http" && len(args) > 1 && args[1] == "profiles" {
+		return runHTTPProfiles(paths, args[2:])
+	}
+	if args[0] == "ssh" && len(args) > 1 && args[1] == "targets" {
+		return runSSHTargets(paths, args[2:])
 	}
 
 	switch args[0] {
@@ -425,6 +432,173 @@ func runMailDomains(paths config.Paths, args []string) int {
 	}
 }
 
+func runSSHTargets(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope ssh targets <list|add|remove>")
+		return daemon.ExitInvalid
+	}
+
+	switch args[0] {
+	case "list":
+		targets, err := admin.LoadSSHTargetsOrDefault(paths)
+		if err != nil {
+			output.WriteErrorf("load ssh targets: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"targets": targets.Targets,
+			"source":  paths.SSHTargetsFile,
+		})
+	case "add":
+		if err := requireRootForMutation("ssh target changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		flags, err := parseFlags(args[1:])
+		if err != nil {
+			output.WriteErrorf("parse flags: %v", err)
+			return daemon.ExitInvalid
+		}
+		port := 22
+		if rawPort := strings.TrimSpace(flags["port"]); rawPort != "" {
+			parsed, err := strconv.Atoi(rawPort)
+			if err != nil {
+				output.WriteErrorf("parse flags: port must be an integer")
+				return daemon.ExitInvalid
+			}
+			port = parsed
+		}
+		target := admin.SSHTarget{
+			Alias:               flags["alias"],
+			Host:                flags["host"],
+			User:                flags["user"],
+			Port:                port,
+			IdentityFile:        flags["identity-file"],
+			ProxyJump:           flags["proxy-jump"],
+			AllowedServices:     parseCSV(flags["services"]),
+			AllowedPaths:        parseCSV(flags["paths"]),
+			AllowedPathPrefixes: parseCSV(flags["path-prefixes"]),
+		}
+		targets, added, err := admin.AddSSHTarget(paths, target)
+		if err != nil {
+			output.WriteErrorf("add ssh target: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":     true,
+			"added":  added,
+			"target": target,
+			"count":  len(targets.Targets),
+			"source": paths.SSHTargetsFile,
+		})
+	case "remove":
+		if err := requireRootForMutation("ssh target changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope ssh targets remove <alias>")
+			return daemon.ExitInvalid
+		}
+		targets, removed, err := admin.RemoveSSHTarget(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove ssh target: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"alias":   args[1],
+			"count":   len(targets.Targets),
+			"source":  paths.SSHTargetsFile,
+		})
+	default:
+		output.WriteErrorf("unknown ssh targets command %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
+func runHTTPProfiles(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope http profiles <list|add|remove>")
+		return daemon.ExitInvalid
+	}
+
+	switch args[0] {
+	case "list":
+		profiles, err := admin.LoadHTTPProfilesOrDefault(paths)
+		if err != nil {
+			output.WriteErrorf("load http profiles: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"profiles": profiles.Profiles,
+			"source":   paths.HTTPProfilesFile,
+		})
+	case "add":
+		if err := requireRootForMutation("http profile changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		flags, err := parseFlags(args[1:])
+		if err != nil {
+			output.WriteErrorf("parse flags: %v", err)
+			return daemon.ExitInvalid
+		}
+		timeout := 30
+		if rawTimeout := strings.TrimSpace(flags["timeout"]); rawTimeout != "" {
+			parsed, err := strconv.Atoi(rawTimeout)
+			if err != nil {
+				output.WriteErrorf("parse flags: timeout must be an integer")
+				return daemon.ExitInvalid
+			}
+			timeout = parsed
+		}
+		profile := admin.HTTPProfile{
+			Name:           flags["name"],
+			BaseURL:        flags["base-url"],
+			Headers:        parseHeaderCSV(flags["headers"]),
+			TimeoutSeconds: timeout,
+		}
+		profiles, added, err := admin.AddHTTPProfile(paths, profile)
+		if err != nil {
+			output.WriteErrorf("add http profile: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"added":   added,
+			"profile": profile,
+			"count":   len(profiles.Profiles),
+			"source":  paths.HTTPProfilesFile,
+		})
+	case "remove":
+		if err := requireRootForMutation("http profile changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope http profiles remove <name>")
+			return daemon.ExitInvalid
+		}
+		profiles, removed, err := admin.RemoveHTTPProfile(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove http profile: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"name":    args[1],
+			"count":   len(profiles.Profiles),
+			"source":  paths.HTTPProfilesFile,
+		})
+	default:
+		output.WriteErrorf("unknown http profiles command %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
 func requireRootForMutation(scope string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("%s require sudo so local agents cannot silently widen access", scope)
@@ -792,12 +966,52 @@ func writeJSON(v any) int {
 func printUsage() {
 	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope init [--force]")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope http profiles <list|add|remove>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope mail domains <list|add|remove> [domain]")
+	_, _ = fmt.Fprintln(os.Stderr, "       openscope ssh targets <list|add|remove>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable|activate|deactivate>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope status")
 	_, _ = fmt.Fprintln(os.Stderr, "       openscope doctor")
+}
+
+func parseCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
+}
+
+func parseHeaderCSV(raw string) map[string]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	headers := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		headers[key] = value
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 func fileExists(path string) bool {
