@@ -1,0 +1,161 @@
+version: 1
+app:
+  name: system
+  display_name: System Commands
+  executor: system
+  description: Brokered local system commands for AI agents
+  security_mode: protected
+
+actions:
+  manage_packages:
+    description: Install, uninstall, upgrade, or list packages
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: manager
+        type: string
+        required: true
+        policy_key: manager
+      - name: package
+        type: string
+        required: false
+        policy_key: package
+    output:
+      mode: json
+      schema: system_packages
+    script: manage_packages
+
+  manage_services:
+    description: Start, stop, restart, or check status of services (brew services and launchctl)
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: service
+        type: string
+        required: true
+        policy_key: service
+    output:
+      mode: json
+      schema: system_services
+    script: manage_services
+
+  manage_processes:
+    description: Kill or list processes
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: false
+        policy_key: process
+      - name: pid
+        type: string
+        required: false
+      - name: signal
+        type: string
+        required: false
+    output:
+      mode: json
+      schema: system_processes
+    script: manage_processes
+
+  check_port:
+    description: Check what process is using a port
+    parameters:
+      - name: port
+        type: string
+        required: true
+    output:
+      mode: json
+      schema: system_port
+    script: check_port
+
+  release_port:
+    description: Release a port by terminating its process
+    parameters:
+      - name: port
+        type: string
+        required: true
+        policy_key: port
+    output:
+      mode: json
+      schema: system_port
+    script: release_port
+
+  manage_files:
+    description: Change file permissions or ownership
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: path
+        type: string
+        required: true
+        policy_key: path
+      - name: mode
+        type: string
+        required: false
+      - name: owner
+        type: string
+        required: false
+    output:
+      mode: json
+      schema: system_files
+    script: manage_files
+
+  manage_apps:
+    description: Quit, launch, install, symlink, or uninstall macOS apps
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+        policy_key: app
+      - name: source
+        type: string
+        required: false
+      - name: dest
+        type: string
+        required: false
+    output:
+      mode: json
+      schema: system_apps
+    script: manage_apps
+
+  build:
+    description: Build projects with xcodebuild
+    parameters:
+      - name: op
+        type: string
+        required: true
+      - name: project
+        type: string
+        required: true
+        policy_key: project
+      - name: target
+        type: string
+        required: false
+      - name: configuration
+        type: string
+        required: false
+      - name: scheme
+        type: string
+        required: false
+      - name: action
+        type: string
+        required: false
+      - name: allow_provisioning
+        type: string
+        required: false
+      - name: arch
+        type: string
+        required: false
+    output:
+      mode: json
+      schema: system_build
+    script: build
