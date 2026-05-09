@@ -116,6 +116,66 @@ launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped
 
 That install step is usually better handled by the installer package rather than by first app launch.
 
+## Notarization Setup (One-Time)
+
+Before you can build notarized releases from the command line, store your
+Apple notarization credentials in the macOS keychain:
+
+1. Generate an app-specific password at https://appleid.apple.com/account/manage
+   (Sign-In and Security → App-Specific Passwords).
+
+2. Store the credential:
+
+   ```bash
+   xcrun notarytool store-credentials "YourProfileName" \
+     --apple-id your@apple-id.com \
+     --team-id YOUR_TEAM_ID \
+     --password <app-specific-password>
+   ```
+
+3. Add the profile name to `.env.local`:
+
+   ```
+   AGENTSCOPE_TEAM_ID=YOUR_TEAM_ID
+   NOTARIZE_PROFILE=YourProfileName
+   ```
+
+You can verify the credential works with:
+
+```bash
+xcrun notarytool history --keychain-profile "YourProfileName"
+```
+
+## Building a Release
+
+With `.env.local` configured, a single command archives, signs, notarizes, and
+packages everything:
+
+```bash
+scripts/build_release.sh --version 0.1.1
+```
+
+To also install locally after building:
+
+```bash
+scripts/build_release.sh --version 0.1.1 --install
+```
+
+The script:
+
+1. `xcodebuild archive` → `dist/OpenScope.xcarchive`
+2. `xcodebuild -exportArchive` → `dist/export/OpenScope.app` (Developer ID signed)
+3. `notarytool submit --wait` → notarizes the app with Apple
+4. `stapler staple` → embeds the ticket in the app bundle
+5. `build_pkg.sh` → produces `dist/OpenScope-<version>.pkg`
+6. Notarizes and staples the PKG as well
+
+Useful flags:
+
+- `--skip-archive` — reuse existing archive (faster iteration on export/notarize)
+- `--skip-notarize` — skip notarization for local-only testing
+- `--install` — `sudo installer` the PKG and run `openscope doctor`
+
 ## Open Questions For Final Packaging
 
 1. Whether `openscoped` should live in `Contents/Resources/bin` or `Contents/Library/LoginItems`

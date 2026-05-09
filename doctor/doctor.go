@@ -14,18 +14,33 @@ import (
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/executor/sshexec"
 )
 
 type Report struct {
-	OK                 bool        `json:"ok"`
-	ConfigDirExists    bool        `json:"config_dir_exists"`
-	DaemonRunning      bool        `json:"daemon_running"`
-	AsapplePath        string      `json:"asapple_path,omitempty"`
-	AsappleSigned      bool        `json:"asapple_signed"`
-	NotesAccess        NotesCheck  `json:"notes_access"`
-	SSHTargetsConfig   ConfigCheck `json:"ssh_targets_config"`
-	HTTPProfilesConfig ConfigCheck `json:"http_profiles_config"`
-	Hints              []string    `json:"hints,omitempty"`
+	OK                 bool                `json:"ok"`
+	ConfigDirExists    bool                `json:"config_dir_exists"`
+	DaemonRunning      bool                `json:"daemon_running"`
+	AsapplePath        string              `json:"asapple_path,omitempty"`
+	AsappleSigned      bool                `json:"asapple_signed"`
+	NotesAccess        NotesCheck          `json:"notes_access"`
+	SSHTargetsConfig   ConfigCheck         `json:"ssh_targets_config"`
+	SSHKeyProtection   KeyProtectionCheck  `json:"ssh_key_protection"`
+	HTTPProfilesConfig     ConfigCheck         `json:"http_profiles_config"`
+	SystemCommandsConfig   ConfigCheck         `json:"system_commands_config"`
+	Hints                  []string            `json:"hints,omitempty"`
+}
+
+type KeyProtectionCheck struct {
+	Checked  bool            `json:"checked"`
+	OK       bool            `json:"ok"`
+	Warnings []SSHKeyWarning `json:"warnings,omitempty"`
+}
+
+type SSHKeyWarning struct {
+	Target  string `json:"target"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
 }
 
 type NotesCheck struct {
@@ -88,9 +103,19 @@ func Run(paths config.Paths) Report {
 		hints = append(hints, "ssh targets config is invalid — fix /Library/Application Support/OpenScope/ssh_targets.yaml or remove the broken file")
 	}
 
+	report.SSHKeyProtection = checkSSHKeyProtection(paths)
+	if !report.SSHKeyProtection.OK {
+		hints = append(hints, "SSH identity files are not adequately protected from unprivileged processes — move keys to a root-owned directory (e.g. /var/openscope/ssh/) with mode 0600 owned by root")
+	}
+
 	report.HTTPProfilesConfig = checkHTTPProfilesConfig(paths)
 	if !report.HTTPProfilesConfig.OK {
 		hints = append(hints, "http profiles config is invalid — fix /Library/Application Support/OpenScope/http_profiles.yaml or remove the broken file")
+	}
+
+	report.SystemCommandsConfig = checkSystemCommandsConfig(paths)
+	if !report.SystemCommandsConfig.OK {
+		hints = append(hints, "system commands config is invalid — fix /Library/Application Support/OpenScope/system_commands.yaml or remove the broken file")
 	}
 
 	report.Hints = hints
@@ -99,7 +124,9 @@ func Run(paths config.Paths) Report {
 		report.AsappleSigned &&
 		report.NotesAccess.OK &&
 		report.SSHTargetsConfig.OK &&
-		report.HTTPProfilesConfig.OK
+		report.SSHKeyProtection.OK &&
+		report.HTTPProfilesConfig.OK &&
+		report.SystemCommandsConfig.OK
 
 	return report
 }
@@ -197,6 +224,48 @@ func checkSSHTargetsConfig(paths config.Paths) ConfigCheck {
 	}
 }
 
+func checkSSHKeyProtection(paths config.Paths) KeyProtectionCheck {
+	targets, err := admin.LoadSSHTargetsOrDefault(paths)
+	if err != nil {
+		return KeyProtectionCheck{
+			Checked: true,
+			OK:      false,
+			Warnings: []SSHKeyWarning{{
+				Level:   "critical",
+				Message: "cannot load ssh targets: " + err.Error(),
+			}},
+		}
+	}
+	if len(targets.Targets) == 0 {
+		return KeyProtectionCheck{Checked: true, OK: true}
+	}
+
+	var warnings []SSHKeyWarning
+	for _, target := range targets.Targets {
+		for _, w := range sshexec.AuditKeyProtection(target, paths.HomeDir) {
+			warnings = append(warnings, SSHKeyWarning{
+				Target:  target.Alias,
+				Level:   w.Level,
+				Message: w.Message,
+			})
+		}
+	}
+
+	hasCritical := false
+	for _, w := range warnings {
+		if w.Level == "critical" {
+			hasCritical = true
+			break
+		}
+	}
+
+	return KeyProtectionCheck{
+		Checked:  true,
+		OK:       !hasCritical,
+		Warnings: warnings,
+	}
+}
+
 func checkHTTPProfilesConfig(paths config.Paths) ConfigCheck {
 	_, err := os.Stat(paths.HTTPProfilesFile)
 	if err != nil {
@@ -216,5 +285,27 @@ func checkHTTPProfilesConfig(paths config.Paths) ConfigCheck {
 		OK:      true,
 		Count:   len(profiles.Profiles),
 		Source:  paths.HTTPProfilesFile,
+	}
+}
+
+func checkSystemCommandsConfig(paths config.Paths) ConfigCheck {
+	_, err := os.Stat(paths.SystemCommandsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ConfigCheck{Checked: true, Present: false, OK: true, Source: paths.SystemCommandsFile}
+		}
+		return ConfigCheck{Checked: true, Present: false, OK: false, Source: paths.SystemCommandsFile, Error: err.Error()}
+	}
+
+	cmds, err := admin.LoadSystemCommands(paths.SystemCommandsFile)
+	if err != nil {
+		return ConfigCheck{Checked: true, Present: true, OK: false, Source: paths.SystemCommandsFile, Error: err.Error()}
+	}
+	return ConfigCheck{
+		Checked: true,
+		Present: true,
+		OK:      true,
+		Count:   len(cmds.Packages.Managers),
+		Source:  paths.SystemCommandsFile,
 	}
 }

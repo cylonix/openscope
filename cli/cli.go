@@ -6,6 +6,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/daemon"
 	"github.com/openscope/openscope/doctor"
+	"github.com/openscope/openscope/executor/systemexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
@@ -51,6 +53,12 @@ func Run(args []string) int {
 	if args[0] == "ssh" && len(args) > 1 && args[1] == "targets" {
 		return runSSHTargets(paths, args[2:])
 	}
+	if args[0] == "system" && len(args) > 1 && args[1] == "commands" {
+		return runSystemCommands(paths, args[2:])
+	}
+	if args[0] == "system" && len(args) > 1 && args[1] == "sudoers" {
+		return runSystemSudoers(paths)
+	}
 
 	switch args[0] {
 	case "init":
@@ -72,7 +80,7 @@ func Run(args []string) int {
 
 func runApp(paths config.Paths, args []string) int {
 	if len(args) == 0 {
-		output.WriteErrorf("usage: openscope app <list|show|validate|enable|disable>")
+		output.WriteErrorf("usage: openscope app <list|show|validate|enable|disable|activate|deactivate>")
 		return daemon.ExitInvalid
 	}
 
@@ -608,7 +616,7 @@ func requireRootForMutation(scope string) error {
 
 func runAgent(paths config.Paths, args []string) int {
 	if len(args) == 0 {
-		output.WriteErrorf("usage: openscope agent <register|list>")
+		output.WriteErrorf("usage: openscope agent <register|list|skills>")
 		return daemon.ExitInvalid
 	}
 
@@ -636,10 +644,149 @@ func runAgent(paths config.Paths, args []string) int {
 			return daemon.ExitConfigError
 		}
 		return writeJSON(registry)
+	case "skills":
+		return runAgentSkills(paths, args[1:])
 	default:
 		output.WriteErrorf("unknown agent command %q", args[0])
 		return daemon.ExitInvalid
 	}
+}
+
+func runAgentSkills(paths config.Paths, args []string) int {
+	if len(args) < 2 || args[0] != "--agent" {
+		output.WriteErrorf("usage: openscope agent skills --agent <agent_id>")
+		return daemon.ExitInvalid
+	}
+	agentID := args[1]
+
+	loaded, err := loadVisibleDefinitions(paths)
+	if err != nil {
+		output.WriteErrorf("load app definitions: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	pf, err := policy.LoadDefault(paths)
+	if err != nil {
+		output.WriteErrorf("load policy: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	sshTargets, _ := admin.LoadSSHTargetsOrDefault(paths)
+	httpProfiles, _ := admin.LoadHTTPProfilesOrDefault(paths)
+	systemCmds, _ := admin.LoadSystemCommandsOrDefault(paths)
+
+	type skillEntry struct {
+		App         string            `json:"app"`
+		Action      string            `json:"action"`
+		Description string            `json:"description"`
+		Parameters  []appdef.Parameter `json:"parameters,omitempty"`
+		Constraints map[string]string `json:"constraints,omitempty"`
+		Context     map[string]any    `json:"context,omitempty"`
+	}
+
+	var skills []skillEntry
+	for _, rule := range pf.Rules {
+		if rule.Effect != "allow" || rule.Agent != agentID {
+			continue
+		}
+		entry, ok := loaded[rule.App]
+		if !ok || !entry.Enabled {
+			continue
+		}
+		action, ok := entry.Definition.Actions[rule.Action]
+		if !ok {
+			continue
+		}
+
+		skill := skillEntry{
+			App:         rule.App,
+			Action:      rule.Action,
+			Description: action.Description,
+			Parameters:  action.Parameters,
+			Constraints: rule.Constraints,
+		}
+
+		if entry.Definition.App.Executor == "ssh" {
+			skill.Context = buildSSHContext(sshTargets, rule.Constraints)
+		}
+		if entry.Definition.App.Executor == "http" {
+			skill.Context = buildHTTPContext(httpProfiles, rule.Constraints)
+		}
+		if entry.Definition.App.Executor == "system" {
+			skill.Context = buildSystemContext(systemCmds, rule.Constraints)
+		}
+
+		skills = append(skills, skill)
+	}
+
+	return writeJSON(map[string]any{
+		"agent":  agentID,
+		"skills": skills,
+	})
+}
+
+func buildSSHContext(targets admin.SSHTargets, constraints map[string]string) map[string]any {
+	ctx := map[string]any{}
+
+	targetAlias := constraints["target"]
+	if targetAlias != "" {
+		if t, ok := admin.FindSSHTarget(targets, targetAlias); ok {
+			ctx["target"] = map[string]any{
+				"alias":                t.Alias,
+				"host":                 t.Host,
+				"user":                 t.User,
+				"allowed_services":     t.AllowedServices,
+				"allowed_paths":        t.AllowedPaths,
+				"allowed_path_prefixes": t.AllowedPathPrefixes,
+			}
+		}
+		return ctx
+	}
+
+	// No target constraint — show all available targets
+	if len(targets.Targets) > 0 {
+		available := make([]map[string]any, 0, len(targets.Targets))
+		for _, t := range targets.Targets {
+			available = append(available, map[string]any{
+				"alias":                t.Alias,
+				"host":                 t.Host,
+				"user":                 t.User,
+				"allowed_services":     t.AllowedServices,
+				"allowed_paths":        t.AllowedPaths,
+				"allowed_path_prefixes": t.AllowedPathPrefixes,
+			})
+		}
+		ctx["available_targets"] = available
+	}
+	return ctx
+}
+
+func buildHTTPContext(profiles admin.HTTPProfiles, constraints map[string]string) map[string]any {
+	ctx := map[string]any{}
+	profileName := constraints["profile"]
+	if profileName != "" {
+		for _, p := range profiles.Profiles {
+			if p.Name == profileName {
+				ctx["profile"] = map[string]any{
+					"name":     p.Name,
+					"base_url": p.BaseURL,
+				}
+				break
+			}
+		}
+		return ctx
+	}
+	if len(profiles.Profiles) > 0 {
+		available := make([]map[string]any, 0, len(profiles.Profiles))
+		for _, p := range profiles.Profiles {
+			available = append(available, map[string]any{
+				"name":     p.Name,
+				"base_url": p.BaseURL,
+			})
+		}
+		ctx["available_profiles"] = available
+	}
+	return ctx
 }
 
 func runStatus(paths config.Paths) int {
@@ -963,17 +1110,393 @@ func writeJSON(v any) int {
 	return daemon.ExitOK
 }
 
+func runSystemCommands(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope system commands <list|add-manager|remove-manager|add-package|remove-package|add-service|remove-service|add-app|remove-app|add-build-prefix|remove-build-prefix>")
+		return daemon.ExitInvalid
+	}
+
+	switch args[0] {
+	case "list":
+		cmds, err := admin.LoadSystemCommandsOrDefault(paths)
+		if err != nil {
+			output.WriteErrorf("load system commands: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"config": cmds,
+			"source": paths.SystemCommandsFile,
+		})
+	case "add-manager":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		flags, err := parseFlags(args[1:])
+		if err != nil {
+			output.WriteErrorf("parse flags: %v", err)
+			return daemon.ExitInvalid
+		}
+		mgr := admin.ManagerConfig{
+			Name:   flags["name"],
+			Binary: flags["binary"],
+			Sudo:   flags["sudo"] == "true",
+		}
+		cmds, added, err := admin.AddManager(paths, mgr)
+		if err != nil {
+			output.WriteErrorf("add manager: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"added":   added,
+			"manager": mgr,
+			"count":   len(cmds.Packages.Managers),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "remove-manager":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands remove-manager <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, removed, err := admin.RemoveManager(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove manager: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"name":    args[1],
+			"count":   len(cmds.Packages.Managers),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "add-package":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands add-package <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, added, err := admin.AddAllowedPackage(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add package: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"added":   added,
+			"package": args[1],
+			"count":   len(cmds.Packages.Allowed),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "remove-package":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands remove-package <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, removed, err := admin.RemoveAllowedPackage(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove package: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"package": args[1],
+			"count":   len(cmds.Packages.Allowed),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "add-service":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands add-service <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, added, err := admin.AddAllowedService(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add service: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"added":   added,
+			"service": args[1],
+			"count":   len(cmds.Services.Allowed),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "remove-service":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands remove-service <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, removed, err := admin.RemoveAllowedService(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove service: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"service": args[1],
+			"count":   len(cmds.Services.Allowed),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "add-app":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands add-app <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, added, err := admin.AddAllowedApp(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add app: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":     true,
+			"added":  added,
+			"app":    args[1],
+			"count":  len(cmds.Apps.AllowedNames),
+			"source": paths.SystemCommandsFile,
+		})
+	case "remove-app":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands remove-app <name>")
+			return daemon.ExitInvalid
+		}
+		cmds, removed, err := admin.RemoveAllowedApp(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove app: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"app":     args[1],
+			"count":   len(cmds.Apps.AllowedNames),
+			"source":  paths.SystemCommandsFile,
+		})
+	case "add-build-prefix":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands add-build-prefix <path>")
+			return daemon.ExitInvalid
+		}
+		cmds, added, err := admin.AddBuildPrefix(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("add build prefix: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":     true,
+			"added":  added,
+			"prefix": args[1],
+			"count":  len(cmds.Builds.AllowedProjectPrefixes),
+			"source": paths.SystemCommandsFile,
+		})
+	case "remove-build-prefix":
+		if err := requireRootForMutation("system command changes"); err != nil {
+			output.WriteErrorf("%v", err)
+			return daemon.ExitDenied
+		}
+		if len(args) < 2 {
+			output.WriteErrorf("usage: openscope system commands remove-build-prefix <path>")
+			return daemon.ExitInvalid
+		}
+		cmds, removed, err := admin.RemoveBuildPrefix(paths, args[1])
+		if err != nil {
+			output.WriteErrorf("remove build prefix: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":      true,
+			"removed": removed,
+			"prefix":  args[1],
+			"count":   len(cmds.Builds.AllowedProjectPrefixes),
+			"source":  paths.SystemCommandsFile,
+		})
+	default:
+		output.WriteErrorf("unknown system commands subcommand %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
+func runSystemSudoers(paths config.Paths) int {
+	cmds, err := admin.LoadSystemCommandsOrDefault(paths)
+	if err != nil {
+		output.WriteErrorf("load system commands: %v", err)
+		return daemon.ExitConfigError
+	}
+
+	username := "root"
+	if u, err := user.Current(); err == nil {
+		username = u.Username
+	}
+
+	fmt.Print(systemexec.GenerateSudoers(cmds, username))
+	return daemon.ExitOK
+}
+
+func buildSystemContext(cmds admin.SystemCommands, constraints map[string]string) map[string]any {
+	ctx := map[string]any{}
+
+	managerName := constraints["manager"]
+	if managerName != "" {
+		if mgr, ok := admin.FindManager(cmds, managerName); ok {
+			ctx["manager"] = map[string]any{
+				"name":   mgr.Name,
+				"binary": mgr.Binary,
+				"sudo":   mgr.Sudo,
+			}
+		}
+	} else if len(cmds.Packages.Managers) > 0 {
+		available := make([]map[string]any, 0, len(cmds.Packages.Managers))
+		for _, mgr := range cmds.Packages.Managers {
+			available = append(available, map[string]any{
+				"name":   mgr.Name,
+				"binary": mgr.Binary,
+				"sudo":   mgr.Sudo,
+			})
+		}
+		ctx["available_managers"] = available
+	}
+
+	if len(cmds.Packages.Allowed) > 0 {
+		ctx["allowed_packages"] = cmds.Packages.Allowed
+	}
+	if len(cmds.Services.Allowed) > 0 {
+		ctx["allowed_services"] = cmds.Services.Allowed
+	}
+	if len(cmds.Processes.AllowedNames) > 0 {
+		ctx["allowed_processes"] = cmds.Processes.AllowedNames
+	}
+	if len(cmds.Processes.AllowedSignals) > 0 {
+		ctx["allowed_signals"] = cmds.Processes.AllowedSignals
+	}
+	if len(cmds.Ports.Allowed) > 0 {
+		ctx["allowed_ports"] = cmds.Ports.Allowed
+	}
+	if len(cmds.Apps.AllowedNames) > 0 {
+		ctx["allowed_apps"] = cmds.Apps.AllowedNames
+	}
+	if len(cmds.Apps.AllowedInstallDirs) > 0 {
+		ctx["allowed_install_dirs"] = cmds.Apps.AllowedInstallDirs
+	}
+	if len(cmds.Builds.AllowedProjectPrefixes) > 0 {
+		ctx["allowed_build_prefixes"] = cmds.Builds.AllowedProjectPrefixes
+	}
+	if cmds.Services.AllowLaunchctl {
+		ctx["launchctl_enabled"] = true
+	}
+
+	return ctx
+}
+
 func printUsage() {
-	_, _ = fmt.Fprintln(os.Stderr, "usage: openscope <app> <action> [flags]")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope init [--force]")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope http profiles <list|add|remove>")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope mail domains <list|add|remove> [domain]")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope ssh targets <list|add|remove>")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope app <list|show|validate|enable|disable|activate|deactivate>")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope policy <list|show|validate|allow|deny>")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope agent <register|list>")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope status")
-	_, _ = fmt.Fprintln(os.Stderr, "       openscope doctor")
+	w := os.Stderr
+	_, _ = fmt.Fprintln(w, "OpenScope — scoped access broker for AI agents")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Usage:")
+	_, _ = fmt.Fprintln(w, "  openscope <app> <action> --agent <id> [--<param> <value> ...]")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Setup:")
+	_, _ = fmt.Fprintln(w, "  init [--force]                    Initialize default config (~/.openscope/)")
+	_, _ = fmt.Fprintln(w, "  status                            Show daemon and config status")
+	_, _ = fmt.Fprintln(w, "  doctor                            Run diagnostics and show hints")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Agents:")
+	_, _ = fmt.Fprintln(w, "  agent register <id>               Register an agent")
+	_, _ = fmt.Fprintln(w, "  agent list                        List registered agents")
+	_, _ = fmt.Fprintln(w, "  agent skills --agent <id>         Show all provisioned actions for an agent")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Apps:")
+	_, _ = fmt.Fprintln(w, "  app list                          List available apps and enabled status")
+	_, _ = fmt.Fprintln(w, "  app show <app>                    Show app definition with actions")
+	_, _ = fmt.Fprintln(w, "  app validate [file]               Validate app definitions")
+	_, _ = fmt.Fprintln(w, "  app enable <app>                  Enable a user-defined app")
+	_, _ = fmt.Fprintln(w, "  app disable <app>                 Disable a user-defined app")
+	_, _ = fmt.Fprintln(w, "  app activate --agent <id> <app>   Allow agent access to all actions (sudo)")
+	_, _ = fmt.Fprintln(w, "  app deactivate --agent <id> <app> Revoke agent access to all actions (sudo)")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Policy:")
+	_, _ = fmt.Fprintln(w, "  policy list                       List all policy rules")
+	_, _ = fmt.Fprintln(w, "  policy show --agent <id>          Show rules for an agent")
+	_, _ = fmt.Fprintln(w, "  policy validate                   Validate the policy file")
+	_, _ = fmt.Fprintln(w, "  policy allow --agent <id> --app <app> --action <action> [--<key> <val>]")
+	_, _ = fmt.Fprintln(w, "                                    Add an allow rule (sudo)")
+	_, _ = fmt.Fprintln(w, "  policy deny  --agent <id> --app <app> --action <action> [--<key> <val>]")
+	_, _ = fmt.Fprintln(w, "                                    Add a deny rule (sudo)")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "SSH targets:")
+	_, _ = fmt.Fprintln(w, "  ssh targets list                  List configured SSH targets")
+	_, _ = fmt.Fprintln(w, "  ssh targets add --alias <name> --host <host> --user <user>")
+	_, _ = fmt.Fprintln(w, "      [--port <n>] [--identity-file <path>] [--proxy-jump <host>]")
+	_, _ = fmt.Fprintln(w, "      [--services <a,b>] [--paths <a,b>] [--path-prefixes <a,b>]")
+	_, _ = fmt.Fprintln(w, "                                    Add an SSH target (sudo)")
+	_, _ = fmt.Fprintln(w, "  ssh targets remove <alias>        Remove an SSH target (sudo)")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "HTTP profiles:")
+	_, _ = fmt.Fprintln(w, "  http profiles list                List configured HTTP profiles")
+	_, _ = fmt.Fprintln(w, "  http profiles add --name <name> --base-url <url>")
+	_, _ = fmt.Fprintln(w, "      [--headers <k=v,k=v>] [--timeout <sec>]")
+	_, _ = fmt.Fprintln(w, "                                    Add an HTTP profile (sudo)")
+	_, _ = fmt.Fprintln(w, "  http profiles remove <name>       Remove an HTTP profile (sudo)")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "System commands:")
+	_, _ = fmt.Fprintln(w, "  system commands list               List system commands config")
+	_, _ = fmt.Fprintln(w, "  system commands add-manager --name <name> --binary <path> [--sudo]")
+	_, _ = fmt.Fprintln(w, "                                    Add a package manager (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands remove-manager <name>")
+	_, _ = fmt.Fprintln(w, "                                    Remove a package manager (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands add-package <name> Add an allowed package (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands remove-package <name>")
+	_, _ = fmt.Fprintln(w, "                                    Remove an allowed package (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands add-service <name> Add an allowed service (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands remove-service <name>")
+	_, _ = fmt.Fprintln(w, "                                    Remove an allowed service (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands add-app <name>    Add an allowed app name (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands remove-app <name> Remove an allowed app name (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands add-build-prefix <path>")
+	_, _ = fmt.Fprintln(w, "                                    Add an allowed build project path prefix (sudo)")
+	_, _ = fmt.Fprintln(w, "  system commands remove-build-prefix <path>")
+	_, _ = fmt.Fprintln(w, "                                    Remove an allowed build project prefix (sudo)")
+	_, _ = fmt.Fprintln(w, "  system sudoers                    Print sudoers entries for sudo-enabled managers")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Admin filters:")
+	_, _ = fmt.Fprintln(w, "  notes blacklist list              List protected folder keywords")
+	_, _ = fmt.Fprintln(w, "  notes blacklist add <keyword>     Add a protected folder keyword (sudo)")
+	_, _ = fmt.Fprintln(w, "  notes blacklist remove <keyword>  Remove a protected folder keyword (sudo)")
+	_, _ = fmt.Fprintln(w, "  mail domains list                 List allowed sender domains")
+	_, _ = fmt.Fprintln(w, "  mail domains add <domain>         Add an allowed sender domain (sudo)")
+	_, _ = fmt.Fprintln(w, "  mail domains remove <domain>      Remove an allowed sender domain (sudo)")
 }
 
 func parseCSV(raw string) []string {

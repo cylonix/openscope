@@ -40,10 +40,10 @@ type Action struct {
 }
 
 type Parameter struct {
-	Name      string `yaml:"name"`
-	Type      string `yaml:"type"`
-	Required  bool   `yaml:"required"`
-	PolicyKey string `yaml:"policy_key"`
+	Name      string `yaml:"name" json:"name"`
+	Type      string `yaml:"type" json:"type"`
+	Required  bool   `yaml:"required" json:"required"`
+	PolicyKey string `yaml:"policy_key" json:"policy_key,omitempty"`
 }
 
 type Output struct {

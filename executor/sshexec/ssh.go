@@ -44,9 +44,15 @@ func (e Executor) Run(def appdef.Definition, actionName string, params map[strin
 		return executor.Result{}, fmt.Errorf("ssh target %q not found", targetAlias)
 	}
 
+	warnings := AuditKeyProtection(target, e.Paths.HomeDir)
+
 	payload, err := e.runAction(target, actionName, params)
 	if err != nil {
 		return executor.Result{}, err
+	}
+
+	if len(warnings) > 0 {
+		payload["key_warnings"] = warnings
 	}
 
 	data, err := json.Marshal(payload)

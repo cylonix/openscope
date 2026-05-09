@@ -31,6 +31,7 @@ type Paths struct {
 	MailFiltersFile      string
 	SSHTargetsFile       string
 	HTTPProfilesFile     string
+	SystemCommandsFile   string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -67,6 +68,7 @@ func DefaultPaths() (Paths, error) {
 		MailFiltersFile:      filepath.Join(adminDir, "mail_filters.yaml"),
 		SSHTargetsFile:       filepath.Join(adminDir, "ssh_targets.yaml"),
 		HTTPProfilesFile:     filepath.Join(adminDir, "http_profiles.yaml"),
+		SystemCommandsFile:   filepath.Join(adminDir, "system_commands.yaml"),
 	}
 
 	if override := os.Getenv("OPENSCOPE_SOCKET"); override != "" {
