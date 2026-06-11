@@ -1,0 +1,285 @@
+@import "tailwindcss";
+
+/* Fonts are loaded via next/font/google in app/layout.tsx, which exposes
+ * CSS variables --font-manrope and --font-newsreader on <html>. */
+
+/* -------------------------------------------------------------------------
+ * Demo dashboards share the marketing site's design tokens
+ * (ascope/web/app/globals.css). Same palette, same typography, same
+ * --teal accent. Two ways the theme can flip:
+ *
+ *   1. `<html data-theme="dark">`  — set by ThemeScript pre-hydration
+ *      based on localStorage("openscope-theme") which the ThemeToggle
+ *      writes. Lets users override system brightness explicitly.
+ *   2. Fallback: when `data-theme` isn't set yet (server-side render
+ *      before the inline script runs), `prefers-color-scheme: dark`
+ *      flips just enough so the first paint isn't white-on-white.
+ *
+ * Approach: dashboards keep hardcoded Tailwind utility classes
+ * (bg-white, text-slate-900, bg-blue-600 …) — we override what those
+ * classes RENDER by remapping them to CSS variables in the same cascade
+ * layer. One file change, no per-component edits.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+  --font-ui-serif: var(--font-newsreader, ui-serif), Georgia, Cambria, "Times New Roman", Times, serif;
+
+  --bg: #fffdfb;
+  --bg-elevated: #fffefd;
+  --panel: #fbf8f4;
+  --panel-strong: #f6f1eb;
+  --panel-lowest: #ffffff;
+
+  --text: #18222b;
+  --text-strong: #0d161e;
+  --muted: #66737d;
+  --muted-soft: #8a949c;
+
+  --line: rgba(43, 53, 61, 0.11);
+  --line-strong: rgba(43, 53, 61, 0.18);
+
+  --teal: #26a69a;
+  --teal-hover: #1e8a80;
+  --teal-soft: rgba(38, 166, 154, 0.12);
+
+  --green: #1d8f52;
+  --warning: #a85d16;
+  --danger: #b33232;
+  --success-bg: rgba(29, 143, 82, 0.10);
+  --success-line: rgba(29, 143, 82, 0.28);
+  --danger-bg: rgba(179, 50, 50, 0.10);
+  --danger-line: rgba(179, 50, 50, 0.28);
+
+  --shadow: 0 24px 80px rgba(24, 34, 43, 0.045);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a141d;
+  --bg-elevated: #131d26;
+  --panel: #17212a;
+  --panel-strong: #212b35;
+  --panel-lowest: #050f18;
+
+  --text: #d9e3f1;
+  --text-strong: #ffffff;
+  --muted: #bbcac6;
+  --muted-soft: #94a3b1;
+
+  --line: rgba(160, 180, 200, 0.16);
+  --line-strong: rgba(160, 180, 200, 0.26);
+
+  --teal: #5ee7d8;
+  --teal-hover: #7eefdf;
+  --teal-soft: rgba(94, 231, 216, 0.16);
+
+  --green: #7ee081;
+  --warning: #ffb86b;
+  --danger: #ffb4ab;
+  --success-bg: rgba(126, 224, 129, 0.14);
+  --success-line: rgba(126, 224, 129, 0.32);
+  --danger-bg: rgba(255, 180, 171, 0.14);
+  --danger-line: rgba(255, 180, 171, 0.32);
+
+  --shadow: 0 30px 80px rgba(163, 255, 243, 0.06);
+}
+
+/* If JS hasn't set data-theme yet AND the OS prefers dark, flip body
+ * colors so the first paint isn't blinding. Inner cards get re-skinned
+ * by the utility overrides below regardless of which path set the var. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0a141d;
+    --bg-elevated: #131d26;
+    --panel: #17212a;
+    --panel-strong: #212b35;
+    --panel-lowest: #050f18;
+    --text: #d9e3f1;
+    --text-strong: #ffffff;
+    --muted: #bbcac6;
+    --muted-soft: #94a3b1;
+    --line: rgba(160, 180, 200, 0.16);
+    --line-strong: rgba(160, 180, 200, 0.26);
+    --teal: #5ee7d8;
+    --teal-hover: #7eefdf;
+    --teal-soft: rgba(94, 231, 216, 0.16);
+    --green: #7ee081;
+    --warning: #ffb86b;
+    --danger: #ffb4ab;
+    --success-bg: rgba(126, 224, 129, 0.14);
+    --success-line: rgba(126, 224, 129, 0.32);
+    --danger-bg: rgba(255, 180, 171, 0.14);
+    --danger-line: rgba(255, 180, 171, 0.32);
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-manrope), system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.9rem;
+  min-height: 100vh;
+}
+
+::selection {
+  background: var(--teal-soft);
+  color: var(--text);
+}
+
+/* Headings on the demo pages adopt Newsreader serif to match marketing.
+ * Tailwind text size utilities still control the actual sizing. */
+h1, h2 {
+  font-family: var(--font-ui-serif);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+code, pre, .font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* -------------------------------------------------------------------------
+ * Tailwind utility overrides — keep names, change paint
+ * ------------------------------------------------------------------------- */
+
+/* Page + card backgrounds */
+.bg-white         { background-color: var(--panel) !important; }
+.bg-slate-50      { background-color: var(--bg) !important; }
+.bg-slate-100     { background-color: var(--panel-strong) !important; }
+.bg-slate-300     { background-color: var(--panel-strong) !important; }
+.bg-slate-400     { background-color: var(--muted-soft) !important; }
+
+/* Dark buttons — repaint with the teal accent, keep text-white legible */
+.bg-slate-800     { background-color: var(--teal-hover) !important; }
+.bg-slate-900     { background-color: var(--teal) !important; }
+.bg-blue-500      { background-color: var(--teal) !important; }
+.bg-blue-600      { background-color: var(--teal) !important; }
+.bg-blue-700      { background-color: var(--teal-hover) !important; }
+
+.hover\:bg-slate-50:hover  { background-color: var(--panel-strong) !important; }
+.hover\:bg-slate-100:hover { background-color: var(--panel-strong) !important; }
+.hover\:bg-slate-800:hover { background-color: var(--teal-hover) !important; }
+.hover\:bg-slate-900:hover { background-color: var(--teal-hover) !important; }
+.hover\:bg-blue-700:hover  { background-color: var(--teal-hover) !important; }
+
+/* Text */
+.text-white       { color: #ffffff !important; }
+.text-slate-900   { color: var(--text-strong) !important; }
+.text-slate-800   { color: var(--text) !important; }
+.text-slate-700   { color: var(--text) !important; }
+.text-slate-600   { color: var(--muted) !important; }
+.text-slate-500   { color: var(--muted) !important; }
+.text-slate-400   { color: var(--muted-soft) !important; }
+.text-blue-600    { color: var(--teal) !important; }
+
+.hover\:text-slate-800:hover { color: var(--text) !important; }
+.hover\:text-slate-900:hover { color: var(--text-strong) !important; }
+
+/* Borders */
+.border-slate-100 { border-color: var(--line) !important; }
+.border-slate-200 { border-color: var(--line) !important; }
+.border-slate-300 { border-color: var(--line-strong) !important; }
+
+/* Green — success / minted boxes */
+.bg-green-50      { background-color: var(--success-bg) !important; }
+.bg-green-100     { background-color: var(--success-bg) !important; }
+.text-green-900   { color: var(--green) !important; }
+.text-green-800   { color: var(--green) !important; }
+.text-green-700   { color: var(--green) !important; }
+.border-green-200 { border-color: var(--success-line) !important; }
+.border-green-300 { border-color: var(--success-line) !important; }
+.border-green-500 { border-color: var(--green) !important; }
+
+/* Red — errors / deny proofs */
+.bg-red-50        { background-color: var(--danger-bg) !important; }
+.bg-red-100       { background-color: var(--danger-bg) !important; }
+.text-red-500     { color: var(--danger) !important; }
+.text-red-600     { color: var(--danger) !important; }
+.text-red-700     { color: var(--danger) !important; }
+.text-red-800     { color: var(--danger) !important; }
+.text-red-900     { color: var(--danger) !important; }
+.border-red-200   { border-color: var(--danger-line) !important; }
+.border-red-300   { border-color: var(--danger-line) !important; }
+
+/* Focus rings — soften blue to teal */
+.focus\:ring-blue-500:focus { --tw-ring-color: var(--teal) !important; }
+
+/* Form controls — inherit theme colors so typed text stays visible.
+ * In light mode this looks like the marketing site's input fields:
+ * cream-toned, hairline-bordered. In dark mode it's a slightly raised
+ * dark surface against the deeper panel. */
+input, textarea, select {
+  background-color: var(--panel-lowest);
+  color: var(--text);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--muted-soft);
+}
+
+/* When an input sits inside a button-styled element with text-white,
+ * we don't want to override that here — buttons handle their own text. */
+button, [role="button"] {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}
+a:hover {
+  color: var(--teal);
+}
+
+/* Tables — subtle row dividers via line variable */
+th, td {
+  border-color: var(--line);
+}
+
+/* -------------------------------------------------------------------------
+ * Governed console — an intentionally dark "terminal" surface used by the
+ * two-column agent console. Stays dark in BOTH themes (like an embedded
+ * terminal widget) so it reads as a CLI regardless of page brightness. It
+ * opts out of the Tailwind utility remapping above by not using the remapped
+ * background/text utilities — style via this class instead.
+ * ------------------------------------------------------------------------- */
+.console-surface {
+  background: #0b1220;
+  color: #d4deee;
+  border: 1px solid var(--line-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+.console-surface .c-ok     { color: #7ee081; }
+.console-surface .c-deny   { color: #ff9d92; }
+.console-surface .c-muted  { color: #8a97aa; }
+.console-surface .c-accent { color: #5ee7d8; }
+.console-surface .c-warn   { color: #ffce8a; }
+.console-surface a { color: #5ee7d8; }
+
+/* -------------------------------------------------------------------------
+ * Accent buttons / active chips — readable text on the teal accent in BOTH
+ * themes. The teal is medium in light mode (white text works) but LIGHT in
+ * dark mode (white text is unreadable), so the on-accent text flips to a near-
+ * black in dark mode. Use .btn-accent / .chip-active instead of bg-blue-600 /
+ * bg-slate-900 + text-white for anything sitting on the teal accent.
+ * ------------------------------------------------------------------------- */
+:root { --on-accent: #ffffff; }
+:root[data-theme="dark"] { --on-accent: #06231f; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) { --on-accent: #06231f; }
+}
+.btn-accent {
+  background-color: var(--teal);
+  color: var(--on-accent);
+}
+.btn-accent:hover:not(:disabled) { background-color: var(--teal-hover); }
+.btn-accent:disabled {
+  background-color: var(--panel-strong);
+  color: var(--muted-soft);
+  cursor: default;
+}
+.chip-active {
+  background-color: var(--teal) !important;
+  color: var(--on-accent) !important;
+  border-color: var(--teal) !important;
+}

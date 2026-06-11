@@ -1,0 +1,29 @@
+# openscope-router + openscope-migrate + openscope-mint.
+# Final image: alpine + static Go binaries.
+#
+# Build context is the REPO ROOT (the router module replaces
+# github.com/openscope/openscope with ../):
+#   docker build -f router/deploy/Dockerfile.router -t openscope-router .
+
+FROM golang:1.25-alpine AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY router/go.mod router/go.sum ./router/
+RUN cd router && go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -C router -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/openscope-router ./cmd/openscope-router && \
+    CGO_ENABLED=0 go build -C router -trimpath -ldflags="-s -w" \
+      -o /out/openscope-migrate ./cmd/openscope-migrate && \
+    CGO_ENABLED=0 go build -C router -trimpath -ldflags="-s -w" \
+      -o /out/openscope-mint ./cmd/openscope-mint
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata wget && \
+    addgroup -S openscope && adduser -S openscope -G openscope
+COPY --from=build /out/openscope-router /out/openscope-migrate /out/openscope-mint /usr/local/bin/
+COPY router/configs/dlp.example.yaml /etc/openscope/dlp.example.yaml
+USER openscope
+EXPOSE 8080
+ENTRYPOINT ["openscope-router"]

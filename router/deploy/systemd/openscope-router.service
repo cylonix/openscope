@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenScope AI router (governed LLM proxy)
+Documentation=https://github.com/openscope/openscope
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=openscope
+Group=openscope
+EnvironmentFile=/etc/openscope/router.env
+ExecStartPre=/usr/local/bin/openscope-migrate
+ExecStart=/usr/local/bin/openscope-router
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=openscope
+
+[Install]
+WantedBy=multi-user.target

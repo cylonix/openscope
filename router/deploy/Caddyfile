@@ -1,0 +1,13 @@
+# TLS edge for the OpenScope router stack (compose --profile tls).
+# Routes: dashboards at /, router API under /v1/*, console under /api/*.
+{$CADDY_DOMAIN} {
+	handle /v1/* {
+		reverse_proxy router:8080
+	}
+	handle /api/* {
+		reverse_proxy console:8081
+	}
+	handle {
+		reverse_proxy dashboard:3000
+	}
+}

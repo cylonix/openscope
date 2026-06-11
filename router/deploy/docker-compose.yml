@@ -1,0 +1,153 @@
+# OpenScope AI Router stack — self-hosted VPC deployment.
+#
+#   cd router/deploy
+#   ../scripts/generate_secrets.sh --write .env   # or write .env by hand
+#   docker compose up -d
+#
+# Services: postgres → migrate (one-shot) → router (:8080) + console (:8081)
+#           → dashboard (:3000). Optional TLS edge: --profile tls (Caddy).
+#
+# Offline / no-AWS evaluation: set OPENSCOPE_PROVIDER=mock in .env — the
+# full governed pipeline (auth, DLP, receipts, budget, dashboards) runs
+# against an in-process mock model.
+
+name: openscope
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: openscope-postgres
+    environment:
+      POSTGRES_USER: openscope_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-dev_admin_password}
+      POSTGRES_DB: openscope
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openscope_admin -d openscope"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: router/deploy/Dockerfile.router
+    image: openscope-router
+    container_name: openscope-migrate
+    entrypoint: ["openscope-migrate", "--set-dev-passwords"]
+    environment:
+      OPENSCOPE_ADMIN_DSN: postgres://openscope_admin:${POSTGRES_ADMIN_PASSWORD:-dev_admin_password}@postgres:5432/openscope?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  router:
+    image: openscope-router
+    container_name: openscope-router
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      OPENSCOPE_DATABASE_URL: postgres://app_rw:dev_app_rw_password@postgres:5432/openscope?sslmode=disable
+      OPENSCOPE_AUTH_PEPPER: ${OPENSCOPE_AUTH_PEPPER:?set in .env — generate_secrets.sh}
+      OPENSCOPE_ROUTER_LISTEN: ":8080"
+      OPENSCOPE_PROVIDER: ${OPENSCOPE_PROVIDER:-bedrock}
+      OPENSCOPE_DEFAULT_MODEL_ID: ${OPENSCOPE_DEFAULT_MODEL_ID:-us.amazon.nova-micro-v1:0}
+      OPENSCOPE_ALLOW_PREMIUM_TIER: ${OPENSCOPE_ALLOW_PREMIUM_TIER:-false}
+      OPENSCOPE_ENABLED_MODELS: ${OPENSCOPE_ENABLED_MODELS:-}
+      OPENSCOPE_DEFAULT_MONTHLY_BUDGET_USD: ${OPENSCOPE_DEFAULT_MONTHLY_BUDGET_USD:-}
+      OPENSCOPE_RESTRICTED_WORKSPACES: ${OPENSCOPE_RESTRICTED_WORKSPACES:-}
+      OPENSCOPE_DLP_RULES_FILE: ${OPENSCOPE_DLP_RULES_FILE:-}
+      OPENSCOPE_POLICY_VERSION: ${OPENSCOPE_POLICY_VERSION:-}
+      OPENSCOPE_BEDROCK_INVOKE_ROLE_ARN: ${OPENSCOPE_BEDROCK_INVOKE_ROLE_ARN:-}
+      OPENSCOPE_BEDROCK_EXTERNAL_ID: ${OPENSCOPE_BEDROCK_EXTERNAL_ID:-}
+      OPENSCOPE_BEDROCK_REGION: ${OPENSCOPE_BEDROCK_REGION:-us-west-2}
+      OPENSCOPE_RECEIPT_PRIVATE_KEY: ${OPENSCOPE_RECEIPT_PRIVATE_KEY:-}
+      OPENSCOPE_RECEIPT_PUBLIC_KEY_ID: ${OPENSCOPE_RECEIPT_PUBLIC_KEY_ID:-self-hosted-1}
+      # AWS credentials for STS assume-role (prefer an instance role in prod)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  console:
+    build:
+      context: ../..
+      dockerfile: router/deploy/Dockerfile.console
+    image: openscope-console
+    container_name: openscope-console
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      OPENSCOPE_CONSOLE_LISTEN: ":8081"
+      OPENSCOPE_DATABASE_URL: postgres://app_rw:dev_app_rw_password@postgres:5432/openscope?sslmode=disable
+      OPENSCOPE_TENANT_READER_DSN: postgres://tenant_reader:dev_tenant_reader_password@postgres:5432/openscope?sslmode=disable
+      OPENSCOPE_VENDOR_READER_DSN: postgres://vendor_reader:dev_vendor_reader_password@postgres:5432/openscope?sslmode=disable
+      OPENSCOPE_ADMIN_DSN: postgres://openscope_admin:${POSTGRES_ADMIN_PASSWORD:-dev_admin_password}@postgres:5432/openscope?sslmode=disable
+      OPENSCOPE_AUTH_PEPPER: ${OPENSCOPE_AUTH_PEPPER:?set in .env — generate_secrets.sh}
+      OPENSCOPE_SESSION_SECRET: ${OPENSCOPE_SESSION_SECRET:?set in .env — generate_secrets.sh}
+      OPENSCOPE_ADMIN_TOKEN: ${OPENSCOPE_ADMIN_TOKEN:?set in .env — generate_secrets.sh}
+      OPENSCOPE_DEV_INSECURE_COOKIES: ${OPENSCOPE_DEV_INSECURE_COOKIES:-true}
+      OPENSCOPE_BODY_RETENTION_MINUTES: ${OPENSCOPE_BODY_RETENTION_MINUTES:-0}
+      OPENSCOPE_BEDROCK_REGION: ${OPENSCOPE_BEDROCK_REGION:-us-west-2}
+      OPENSCOPE_ENABLED_MODELS: ${OPENSCOPE_ENABLED_MODELS:-}
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    image: openscope-dashboard
+    container_name: openscope-dashboard
+    depends_on:
+      - router
+      - console
+    environment:
+      OPENSCOPE_ROUTER_URL: http://router:8080
+      OPENSCOPE_CONSOLE_URL: http://console:8081
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  # Optional one-command TLS edge:  docker compose --profile tls up -d
+  # Set CADDY_DOMAIN (public DNS) and remove the 127.0.0.1 port pins above
+  # if the edge should be the only public entry point.
+  caddy:
+    image: caddy:2-alpine
+    container_name: openscope-caddy
+    profiles: ["tls"]
+    depends_on:
+      - router
+      - console
+      - dashboard
+    environment:
+      # Set CADDY_DOMAIN to your public DNS name when using the tls profile.
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+volumes:
+  postgres_data:
+    name: openscope_postgres_data
+  caddy_data:
+    name: openscope_caddy_data

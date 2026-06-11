@@ -1,0 +1,22 @@
+[Unit]
+Description=OpenScope console (dashboard read API)
+Documentation=https://github.com/openscope/openscope
+After=network-online.target postgresql.service openscope-router.service
+Wants=network-online.target
+
+[Service]
+User=openscope
+Group=openscope
+EnvironmentFile=/etc/openscope/router.env
+ExecStart=/usr/local/bin/openscope-console
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=openscope
+
+[Install]
+WantedBy=multi-user.target

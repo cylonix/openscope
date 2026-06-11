@@ -1,0 +1,11 @@
+# /etc/logrotate.d/openscope — rotate the broker's append-only audit log.
+/var/lib/openscope/audit.jsonl {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0600 openscope openscope
+}

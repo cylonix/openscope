@@ -1,0 +1,27 @@
+# systemd unit for the OpenScope broker on a Linux VPC host.
+# Install: deploy/broker/install.sh (or copy to /etc/systemd/system/).
+[Unit]
+Description=OpenScope action broker (openscoped)
+Documentation=https://github.com/openscope/openscope
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=openscope
+Group=openscope
+EnvironmentFile=/etc/openscope/openscoped.env
+ExecStart=/usr/local/bin/openscoped
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=openscope
+ReadWritePaths=/var/lib/openscope
+ConfigurationDirectory=openscope
+
+[Install]
+WantedBy=multi-user.target

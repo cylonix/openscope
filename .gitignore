@@ -11,7 +11,10 @@ bin/
 dist/
 dist/export/
 dist/*.pkg
-web/
+
+# Marketing site — its own repo (cylonix/openscope-web), root only.
+# router/web (console dashboard) IS tracked here.
+/web/
 
 # Local script caches
 scripts/__pycache__/
@@ -31,4 +34,7 @@ docs/diagrams/*.key
 docs/*.pdf
 
 *.tar
-deploy/
+
+# Live droplet infra (private). deploy/broker and router/deploy ARE tracked.
+/deploy/docker-compose-openscope.yml
+/deploy/traefik/
