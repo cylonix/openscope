@@ -11,7 +11,6 @@ import (
 )
 
 const DirName = ".openscope"
-const AdminDir = "/Library/Application Support/OpenScope"
 
 type Paths struct {
 	HomeDir              string
@@ -32,6 +31,26 @@ type Paths struct {
 	SSHTargetsFile       string
 	HTTPProfilesFile     string
 	SystemCommandsFile   string
+
+	// Network-broker hardening (enterprise VPC deployment). The HTTP
+	// listener requires Bearer agent tokens (osk_agent_*) unless
+	// HTTPAllowAnon is set, and refuses to serve plaintext on non-loopback
+	// addresses unless HTTPPlaintextOK is set.
+	HTTPTLSCertFile string // OPENSCOPE_HTTP_TLS_CERT
+	HTTPTLSKeyFile  string // OPENSCOPE_HTTP_TLS_KEY
+	HTTPAllowAnon   bool   // OPENSCOPE_HTTP_ALLOW_ANON — legacy localhost bridge
+	HTTPPlaintextOK bool   // OPENSCOPE_HTTP_PLAINTEXT_OK — TLS terminated upstream
+
+	// Agent token store (daemon side). Pepper: env wins, else the pepper
+	// file (auto-generated on first mint — losing it invalidates every
+	// minted token).
+	AgentTokensFile string // <ConfigDir>/agent_tokens.yaml
+	TokenPepperFile string // <ConfigDir>/token_pepper
+	AuthPepper      string // OPENSCOPE_AUTH_PEPPER
+
+	// Client side: token + private-CA bundle for calls to a remote broker.
+	ClientToken  string // OPENSCOPE_TOKEN
+	ClientCAFile string // OPENSCOPE_HTTP_CA
 }
 
 func DefaultPaths() (Paths, error) {
@@ -75,7 +94,25 @@ func DefaultPaths() (Paths, error) {
 		paths.SocketPath = override
 	}
 
+	paths.HTTPTLSCertFile = os.Getenv("OPENSCOPE_HTTP_TLS_CERT")
+	paths.HTTPTLSKeyFile = os.Getenv("OPENSCOPE_HTTP_TLS_KEY")
+	paths.HTTPAllowAnon = envBool("OPENSCOPE_HTTP_ALLOW_ANON")
+	paths.HTTPPlaintextOK = envBool("OPENSCOPE_HTTP_PLAINTEXT_OK")
+	paths.AgentTokensFile = filepath.Join(configDir, "agent_tokens.yaml")
+	paths.TokenPepperFile = filepath.Join(configDir, "token_pepper")
+	paths.AuthPepper = os.Getenv("OPENSCOPE_AUTH_PEPPER")
+	paths.ClientToken = os.Getenv("OPENSCOPE_TOKEN")
+	paths.ClientCAFile = os.Getenv("OPENSCOPE_HTTP_CA")
+
 	return paths, nil
+}
+
+func envBool(key string) bool {
+	switch os.Getenv(key) {
+	case "1", "true", "TRUE", "yes", "YES", "on":
+		return true
+	}
+	return false
 }
 
 func resolveConfigHomeDir() (string, error) {

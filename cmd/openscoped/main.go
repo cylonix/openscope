@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 
+	"path/filepath"
+
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/daemon"
 )
 
@@ -23,6 +26,27 @@ func main() {
 	}
 
 	service := daemon.NewService(paths)
+
+	// Control plane (strictly optional): enabled by OPENSCOPE_CONTROL_PLANE_URL
+	// or a prior `openscope enroll`. Metering only — an unreachable control
+	// plane never blocks broker traffic.
+	cpCfg := cpclient.ResolveConfig(
+		filepath.Join(paths.ConfigDir, "controlplane.yaml"),
+		filepath.Join(paths.StateDir, "cp_spool.jsonl"),
+	)
+	if cp := cpclient.New(cpCfg); cp != nil {
+		defer cp.Close()
+		service.Usage = cp.Record
+		fmt.Fprintf(os.Stderr, "control plane enabled: %s\n", cpCfg.BaseURL)
+	}
+
+	// Fail fast on unsafe network configuration (plaintext on non-loopback,
+	// anonymous mode off-loopback) before binding anything.
+	if err := daemon.ValidateHTTPConfig(paths); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(daemon.ExitConfigError)
+	}
+
 	errCh := make(chan error, 2)
 
 	go func() {
@@ -31,7 +55,7 @@ func main() {
 
 	if paths.HTTPListenAddr != "" {
 		go func() {
-			errCh <- daemon.ListenAndServeHTTP(paths.HTTPListenAddr, service)
+			errCh <- daemon.ListenAndServeHTTP(paths, service)
 		}()
 	}
 

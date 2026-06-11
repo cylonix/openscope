@@ -1,0 +1,15 @@
+NORTHWIND SEMICONDUCTOR — EXPORT CONTROL NOTICE
+================================================
+
+Synthetic sample for the OpenScope demo. Fictional classifications.
+
+This package contains technical data subject to U.S. export controls.
+
+  Classification:   EXPORT-CONTROLLED
+  ECCN:             3A001
+  Jurisdiction:     EAR (Export Administration Regulations)
+  License excpt:    EAR99 items are described separately in Appendix B.
+
+Do not transfer, email, upload, or otherwise disclose this material to any
+foreign person or external system (including third-party AI services)
+without prior review by the Trade Compliance team.

@@ -19,6 +19,19 @@ type Event struct {
 	Decision  string            `json:"decision"`
 	Result    string            `json:"result"`
 	Reason    string            `json:"reason,omitempty"`
+
+	// Network-transport context, set when the request arrived over the
+	// daemon's HTTP listener (empty for the local Unix socket — the JSONL
+	// shape is unchanged for existing local deployments).
+	RequestID   string `json:"request_id,omitempty"`
+	Transport   string `json:"transport,omitempty"` // "unix" | "http"
+	RemoteAddr  string `json:"remote_addr,omitempty"`
+	TokenPrefix string `json:"token_prefix,omitempty"` // never the token itself
+
+	// Proposal apply context, set by `openscope apply` (empty otherwise).
+	ProposalSHA256 string `json:"proposal_sha256,omitempty"`
+	ProposalName   string `json:"proposal_name,omitempty"`
+	AuthoredBy     string `json:"authored_by,omitempty"`
 }
 
 func Append(path string, event Event) error {

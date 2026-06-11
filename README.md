@@ -1,13 +1,20 @@
 # OpenScope
 
-OpenScope is a scoped access broker for AI agents. Today it brokers protected
-macOS app access such as Apple Notes and Apple Mail, and the same model can
-extend to sandboxed agents and future remote operations.
+**Capability broker for AI agents. Execution containment, not traffic 
+governance.** Instead of filtering the dangerous primitive when it 
+appears in the agent's traffic, OpenScope removes it from the agent's 
+reach entirely. The agent gets named, parameter-checked actions like 
+`restart_service()` or `read_note()`; credentials, automation approval, 
+and key material stay inside the broker.
 
-In the broader Cylonix + OpenScope model, Cylonix provides secure private reach
-into environments, and OpenScope provides the brokered action layer on top of
-that reach.
+This repo is the local-tier broker that ships today (v0.1.0) — a signed 
+macOS daemon plus CLI, brokering Apple Notes, Apple Mail, shell, and 
+SSH for agents like OpenClaw, Codex, and Claude Code. The team/enterprise 
+tier (control plane, policy + audit service, out-of-band circuit breaker, 
+prompt-side PII router) is in active development.
 
+→ [openscopeai.com](https://openscopeai.com) — full positioning, 
+comparison with gateways and MCP brokers, design partner program.
 ## Architecture
 
 ```
@@ -230,6 +237,16 @@ tccutil reset AppleEvents com.ezblock.openscope && open /Applications/OpenScope.
 
 See [`docs/pilot_guide.md`](docs/pilot_guide.md) for a full walkthrough.
 
+## Coding Agent Integration
+
+To govern a coding agent — Claude Code, Codex CLI, OpenCode, Gemini CLI, or
+anything else that runs shell commands — with brokered SSH, sudo-free system
+actions, and per-agent policy, see the guide in
+[`web/public/docs/coding-agents.md`](web/public/docs/coding-agents.md)
+(published at [/docs/coding-agents](https://open-scope.org/docs/coding-agents))
+and the working Claude Code files in
+[`docs/examples/claude-code/`](docs/examples/claude-code/).
+
 ## OpenClaw Integration
 
 If you want to use OpenScope as the security boundary for an OpenClaw agent:
@@ -263,3 +280,13 @@ scope to `Inbox` and optionally add sender-domain restrictions with
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE).
+
+## Maintainer
+
+Built and maintained by [Randy Huang](https://linkedin.com/in/randyhuang-0b71968), 
+sole engineer. Previously: Co-founder/Head of Technology at ARO Network; 
+Founder/CEO at Cylonix; 19 years at Cisco on networking processors and 
+capability infrastructure (the same engineering pattern, applied to a 
+new actor).
+
+Contact: randy@cylonix.io · [github.com/cylonix](https://github.com/cylonix)

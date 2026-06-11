@@ -1,0 +1,53 @@
+# OpenScope bounds — the root-owned envelope no proposal may exceed.
+# Install to <AdminDir>/bounds.yaml (/Library/Application Support/OpenScope on
+# macOS, /etc/openscope elsewhere). Edit as root to deliberately widen what
+# `openscope apply` will accept. With no file present, these same defaults apply.
+version: 1
+
+# Findings with these rule IDs hard-fail apply (override only by editing here).
+blocking_rules:
+  - SYS-APP-CODEEXEC
+  - SSH-SECRET-PATH
+  - SYS-SUDO-MANAGER
+  - SSH-TARGET-CONFLICT
+  - POLICY-MAX-TARGETS
+
+ssh:
+  # root | acknowledge | deny  — root logins require typed acknowledgment.
+  root_user: acknowledge
+  # A granted read path/prefix that is, contains, or sits under any of these
+  # is treated as reaching secrets and BLOCKS apply.
+  secret_absolute_paths:
+    - /etc/shadow
+    - /etc/sudoers
+    - /etc/ssl/private
+    - /etc/letsencrypt
+    - /etc/nginx/ssl
+    - /root/.ssh
+    - /home
+  # Broad read prefixes — allowed, but flagged MEDIUM (creds leak into them).
+  broad_read_prefixes:
+    - /var/log
+    - /var
+    - /etc
+    - /usr
+    - /opt
+  # Web/app roots whose reads may expose application config such as .env.
+  webroot_prefixes:
+    - /var/www
+    - /srv/www
+    - /usr/share/nginx/html
+  # Config files that commonly inline secrets/env — read grants flagged MEDIUM.
+  config_secret_files:
+    - compose.yml
+    - compose.yaml
+    - docker-compose.yml
+    - docker-compose.yaml
+    - .env
+  require_identity_file: false
+
+system:
+  deny_app_install_from_writable_source: true
+  deny_sudo_managers: false
+
+max_targets_per_agent: 16

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,17 +19,17 @@ import (
 )
 
 type Report struct {
-	OK                 bool                `json:"ok"`
-	ConfigDirExists    bool                `json:"config_dir_exists"`
-	DaemonRunning      bool                `json:"daemon_running"`
-	AsapplePath        string              `json:"asapple_path,omitempty"`
-	AsappleSigned      bool                `json:"asapple_signed"`
-	NotesAccess        NotesCheck          `json:"notes_access"`
-	SSHTargetsConfig   ConfigCheck         `json:"ssh_targets_config"`
-	SSHKeyProtection   KeyProtectionCheck  `json:"ssh_key_protection"`
-	HTTPProfilesConfig     ConfigCheck         `json:"http_profiles_config"`
-	SystemCommandsConfig   ConfigCheck         `json:"system_commands_config"`
-	Hints                  []string            `json:"hints,omitempty"`
+	OK                   bool               `json:"ok"`
+	ConfigDirExists      bool               `json:"config_dir_exists"`
+	DaemonRunning        bool               `json:"daemon_running"`
+	AsapplePath          string             `json:"asapple_path,omitempty"`
+	AsappleSigned        bool               `json:"asapple_signed"`
+	NotesAccess          NotesCheck         `json:"notes_access"`
+	SSHTargetsConfig     ConfigCheck        `json:"ssh_targets_config"`
+	SSHKeyProtection     KeyProtectionCheck `json:"ssh_key_protection"`
+	HTTPProfilesConfig   ConfigCheck        `json:"http_profiles_config"`
+	SystemCommandsConfig ConfigCheck        `json:"system_commands_config"`
+	Hints                []string           `json:"hints,omitempty"`
 }
 
 type KeyProtectionCheck struct {
@@ -75,32 +76,37 @@ func Run(paths config.Paths) Report {
 		if strings.TrimSpace(paths.HTTPURL) != "" {
 			hints = append(hints, "broker not reachable over HTTP — verify OPENSCOPE_HTTP_URL and that openscoped is listening on OPENSCOPE_HTTP_LISTEN")
 		} else {
-			hints = append(hints, "daemon not running — restart: launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped")
+			hints = append(hints, "daemon not running — restart: "+daemonRestartHint())
 		}
 	}
 
-	// asapple binary
-	asapplePath := findAsapple()
-	report.AsapplePath = asapplePath
-	if asapplePath == "" {
-		hints = append(hints, "asapple not found — rebuild the OpenScope.app bundle")
-	} else {
-		report.AsappleSigned = checkSigned(asapplePath)
-		if !report.AsappleSigned {
-			hints = append(hints, "asapple is not code-signed — rebuild the OpenScope.app bundle from Xcode")
+	// Apple-automation checks only apply where the applescript executor
+	// exists; a Linux broker brokers ssh/http/system actions only.
+	appleChecks := runtime.GOOS == "darwin"
+	if appleChecks {
+		// asapple binary
+		asapplePath := findAsapple()
+		report.AsapplePath = asapplePath
+		if asapplePath == "" {
+			hints = append(hints, "asapple not found — rebuild the OpenScope.app bundle")
+		} else {
+			report.AsappleSigned = checkSigned(asapplePath)
+			if !report.AsappleSigned {
+				hints = append(hints, "asapple is not code-signed — rebuild the OpenScope.app bundle from Xcode")
+			}
 		}
-	}
 
-	// Notes Automation permission — probe with a minimal AppleScript
-	report.NotesAccess = checkNotesAccess(asapplePath)
-	if !report.NotesAccess.OK {
-		hints = append(hints, "Notes access denied — run: tccutil reset AppleEvents com.ezblock.openscope && open /Applications/OpenScope.app")
-		hints = append(hints, "then re-run any Notes action to trigger the macOS approval prompt")
+		// Notes Automation permission — probe with a minimal AppleScript
+		report.NotesAccess = checkNotesAccess(asapplePath)
+		if !report.NotesAccess.OK {
+			hints = append(hints, "Notes access denied — run: tccutil reset AppleEvents com.ezblock.openscope && open /Applications/OpenScope.app")
+			hints = append(hints, "then re-run any Notes action to trigger the macOS approval prompt")
+		}
 	}
 
 	report.SSHTargetsConfig = checkSSHTargetsConfig(paths)
 	if !report.SSHTargetsConfig.OK {
-		hints = append(hints, "ssh targets config is invalid — fix /Library/Application Support/OpenScope/ssh_targets.yaml or remove the broken file")
+		hints = append(hints, "ssh targets config is invalid — fix "+paths.SSHTargetsFile+" or remove the broken file")
 	}
 
 	report.SSHKeyProtection = checkSSHKeyProtection(paths)
@@ -110,19 +116,18 @@ func Run(paths config.Paths) Report {
 
 	report.HTTPProfilesConfig = checkHTTPProfilesConfig(paths)
 	if !report.HTTPProfilesConfig.OK {
-		hints = append(hints, "http profiles config is invalid — fix /Library/Application Support/OpenScope/http_profiles.yaml or remove the broken file")
+		hints = append(hints, "http profiles config is invalid — fix "+paths.HTTPProfilesFile+" or remove the broken file")
 	}
 
 	report.SystemCommandsConfig = checkSystemCommandsConfig(paths)
 	if !report.SystemCommandsConfig.OK {
-		hints = append(hints, "system commands config is invalid — fix /Library/Application Support/OpenScope/system_commands.yaml or remove the broken file")
+		hints = append(hints, "system commands config is invalid — fix "+paths.SystemCommandsFile+" or remove the broken file")
 	}
 
 	report.Hints = hints
 	report.OK = report.ConfigDirExists &&
 		report.DaemonRunning &&
-		report.AsappleSigned &&
-		report.NotesAccess.OK &&
+		(!appleChecks || (report.AsappleSigned && report.NotesAccess.OK)) &&
 		report.SSHTargetsConfig.OK &&
 		report.SSHKeyProtection.OK &&
 		report.HTTPProfilesConfig.OK &&
@@ -308,4 +313,12 @@ func checkSystemCommandsConfig(paths config.Paths) ConfigCheck {
 		Count:   len(cmds.Packages.Managers),
 		Source:  paths.SystemCommandsFile,
 	}
+}
+
+// daemonRestartHint is the platform-appropriate way to restart openscoped.
+func daemonRestartHint() string {
+	if runtime.GOOS == "darwin" {
+		return "launchctl kickstart -k gui/$(id -u)/com.ezblock.openscope.openscoped"
+	}
+	return "sudo systemctl restart openscoped"
 }

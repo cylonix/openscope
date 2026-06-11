@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    name: core module
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # GOWORK=off proves the module is self-contained (workspace mode can
+      # mask a missing require).
+      - run: GOWORK=off go build ./...
+      - run: GOWORK=off go vet ./...
+      - run: GOWORK=off go test ./...
+
+  core-linux-cross:
+    name: core linux cross-build (broker)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # The Linux broker excludes the applescript executor via build tags —
+      # cross-building from macOS keeps the platform split honest.
+      - run: GOWORK=off GOOS=linux GOARCH=amd64 go build ./...
+      - run: GOWORK=off GOOS=linux GOARCH=arm64 go build ./...
+
+  router:
+    name: router module
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: router
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: GOWORK=off go build ./...
+      - run: GOWORK=off go vet ./...
+      - run: GOWORK=off go test ./...
+
+  router-smoke:
+    name: router compose smoke (mock provider)
+    runs-on: ubuntu-latest
+    needs: router
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd router && ./scripts/smoke.sh

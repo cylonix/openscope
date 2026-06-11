@@ -4,13 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build and Test
 
+This repo holds two Go modules in a `go.work` workspace:
+- root `github.com/openscope/openscope` — the broker (CLI + daemon + executors). Dependency policy: **yaml.v3 only**; anything needing AWS/pgx lives in `router/`.
+- `router/` `github.com/openscope/openscope/router` — the AI router + console (`replace`s the root module with `../`).
+
 ```bash
-go build ./...
-go test ./...
+go build ./... && go test ./... && go vet ./...        # root module
+cd router && go build ./... && go test ./...           # router module
 go test ./daemon/...          # single package
 go test -run TestServiceHandle ./daemon/...  # single test
-go vet ./...
+GOOS=linux go build ./...     # Linux broker cross-build (build-tag split must stay green)
+cd router && make smoke       # full-stack Docker smoke test, mock provider, no AWS
 ```
+
+CI runs each module with `GOWORK=off` to prove self-containment.
+
+The vendor control plane lives in the **private** sibling repo `../openscope-enterprise` (open-core split: only vendor-side code is closed; its go.mod `replace`s the public module with `../ascope`).
 
 The Xcode project in `macos/OpenScopeApp/` builds the signed macOS app bundle. Its Run Script phase calls `go build` for `openscope` and `openscoped`, and `swiftc` for `asapple`, placing all binaries into `Contents/Resources/bin/`. Build the bundle via Xcode or trigger the phase indirectly — do not manually copy binaries into a bundle.
 
@@ -57,8 +66,17 @@ openscope CLI  →(JSON over Unix socket)→  openscoped daemon  →(JSON over s
 | `executor/applescript` | Spawns `asapple`, materializes embedded scripts to temp files |
 | `resources` | `go:embed` FS for bundled app YAMLs and AppleScript files |
 | `agent` | Agent registry YAML — `Register`, `IsRegistered` |
-| `audit` | Append-only JSONL audit log |
-| `config` | `Paths` struct and `~/.openscope/` layout |
+| `audit` | Append-only JSONL audit log (+ optional transport metadata fields) |
+| `config` | `Paths` struct and `~/.openscope/` layout; `AdminDir` is platform-split (`/etc/openscope` off-macOS) |
+| `authtoken` | Shared osk_* token scheme (mint/hash/parse, HMAC+pepper) + YAML file store for broker agent tokens |
+| `cpclient` | Control-plane client: non-blocking usage metering with disk spool, signed manifest fetch, enrollment. No-op unless configured |
+| `router/...` | Separate module: AI router (`/v1/chat[,/completions]`, `/v1/messages`, `/v1/scan`), DLP, Ed25519 receipts, budgets, console + dashboards. See `router/README.md` |
+
+### Enterprise/VPC topology
+
+- The daemon's HTTP listener (`daemon/http.go`) requires Bearer agent tokens (`openscope agent token mint`) and derives the agent identity FROM the token; TLS via `OPENSCOPE_HTTP_TLS_CERT/_KEY`; plaintext on non-loopback needs `OPENSCOPE_HTTP_PLAINTEXT_OK=1`; legacy anon bridge (`OPENSCOPE_HTTP_ALLOW_ANON=1`) is loopback-only. Docs: `docs/enterprise-broker.md`, packaging: `deploy/broker/`.
+- Linux builds exclude the applescript executor via build tags (`daemon/executors_*.go`); `executorFor` errors on unknown executors instead of falling back.
+- Enterprise vs personal is configuration, not edition — no build-time flags.
 
 ### Adding a new app
 
@@ -68,7 +86,7 @@ openscope CLI  →(JSON over Unix socket)→  openscoped daemon  →(JSON over s
 
 ### Adding a new executor type
 
-Implement `executor.Runner`, register it by name in `daemon.NewService`'s `Executors` map and in `daemon/service_test.go`'s stub. The `app.executor` YAML field selects it.
+Implement `executor.Runner`, register it by name in `daemon/executors_darwin.go` and/or `daemon/executors_default.go` (platform-split `defaultExecutors`), and in `daemon/service_test.go`'s stub. The `app.executor` YAML field selects it.
 
 ## Runtime Files
 

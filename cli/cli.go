@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/agent"
 	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/authtoken"
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/daemon"
 	"github.com/openscope/openscope/doctor"
 	"github.com/openscope/openscope/executor/systemexec"
@@ -73,6 +77,12 @@ func Run(args []string) int {
 		return runStatus(paths)
 	case "doctor":
 		return runDoctor(paths)
+	case "enroll":
+		return runEnroll(paths, args[1:])
+	case "plan":
+		return runPlan(paths, args[1:])
+	case "apply":
+		return runApply(paths, args[1:])
 	default:
 		return runProtectedAction(paths, args)
 	}
@@ -646,10 +656,150 @@ func runAgent(paths config.Paths, args []string) int {
 		return writeJSON(registry)
 	case "skills":
 		return runAgentSkills(paths, args[1:])
+	case "token":
+		return runAgentToken(paths, args[1:])
 	default:
 		output.WriteErrorf("unknown agent command %q", args[0])
 		return daemon.ExitInvalid
 	}
+}
+
+// runAgentToken manages the network-broker token store
+// (<config>/agent_tokens.yaml). Tokens authenticate agents on the daemon's
+// HTTP listener; the daemon derives the agent identity from the token.
+func runAgentToken(paths config.Paths, args []string) int {
+	if len(args) == 0 {
+		output.WriteErrorf("usage: openscope agent token <mint|list|revoke>")
+		return daemon.ExitInvalid
+	}
+
+	pepper, err := authtoken.LoadPepper(paths.AuthPepper, paths.TokenPepperFile)
+	if err != nil {
+		output.WriteErrorf("load token pepper: %v", err)
+		return daemon.ExitConfigError
+	}
+	store := &authtoken.FileStore{Path: paths.AgentTokensFile, Pepper: pepper}
+
+	switch args[0] {
+	case "mint":
+		rest := args[1:]
+		rotate := false
+		if len(rest) > 0 && rest[0] == "--rotate" {
+			rotate = true
+			rest = rest[1:]
+		}
+		if len(rest) != 1 {
+			output.WriteErrorf("usage: openscope agent token mint [--rotate] <agent_id>")
+			return daemon.ExitInvalid
+		}
+		agentID := rest[0]
+		// Minting implies the agent may act — register it like `agent register`.
+		if _, _, err := agent.Register(paths, agentID); err != nil {
+			output.WriteErrorf("register agent: %v", err)
+			return daemon.ExitConfigError
+		}
+		token, err := store.Mint(agentID, rotate)
+		if err != nil {
+			output.WriteErrorf("mint token: %v", err)
+			return daemon.ExitConfigError
+		}
+		return writeJSON(map[string]any{
+			"ok":    true,
+			"agent": agentID,
+			// Shown exactly once — only the HMAC hash is stored.
+			"token": token,
+			"note":  "store this token now; it cannot be recovered later",
+		})
+	case "list":
+		rows, err := store.List()
+		if err != nil {
+			output.WriteErrorf("list tokens: %v", err)
+			return daemon.ExitConfigError
+		}
+		type tokenInfo struct {
+			Agent     string `json:"agent"`
+			Prefix    string `json:"prefix"`
+			CreatedAt string `json:"created_at"`
+			RevokedAt string `json:"revoked_at,omitempty"`
+		}
+		out := make([]tokenInfo, 0, len(rows))
+		for _, row := range rows {
+			info := tokenInfo{Agent: row.Agent, Prefix: row.Prefix, CreatedAt: row.CreatedAt.Format(time.RFC3339)}
+			if row.RevokedAt != nil {
+				info.RevokedAt = row.RevokedAt.Format(time.RFC3339)
+			}
+			out = append(out, info)
+		}
+		return writeJSON(map[string]any{"tokens": out})
+	case "revoke":
+		if len(args) != 2 {
+			output.WriteErrorf("usage: openscope agent token revoke <agent_id|token_prefix>")
+			return daemon.ExitInvalid
+		}
+		n, err := store.Revoke(args[1])
+		if err != nil {
+			output.WriteErrorf("revoke token: %v", err)
+			return daemon.ExitConfigError
+		}
+		if n == 0 {
+			output.WriteErrorf("no active token matches %q", args[1])
+			return daemon.ExitNotFound
+		}
+		return writeJSON(map[string]any{"ok": true, "revoked": n})
+	default:
+		output.WriteErrorf("unknown agent token command %q", args[0])
+		return daemon.ExitInvalid
+	}
+}
+
+// runEnroll registers this deployment with the vendor control plane and
+// persists the deployment token to <ConfigDir>/controlplane.yaml. The
+// control plane is strictly optional — nothing requires enrollment.
+func runEnroll(paths config.Paths, args []string) int {
+	flags := map[string]string{}
+	for i := 0; i+1 < len(args); i += 2 {
+		if !strings.HasPrefix(args[i], "--") {
+			output.WriteErrorf("usage: openscope enroll --control-plane <url> --code <enroll_code> [--name <deployment_name>] [--kind broker|router]")
+			return daemon.ExitInvalid
+		}
+		flags[strings.TrimPrefix(args[i], "--")] = args[i+1]
+	}
+	url, code := flags["control-plane"], flags["code"]
+	if url == "" || code == "" {
+		output.WriteErrorf("usage: openscope enroll --control-plane <url> --code <enroll_code> [--name <deployment_name>] [--kind broker|router]")
+		return daemon.ExitInvalid
+	}
+	name := flags["name"]
+	if name == "" {
+		if host, err := os.Hostname(); err == nil {
+			name = host
+		}
+	}
+	kind := flags["kind"]
+	if kind == "" {
+		kind = "broker"
+	}
+
+	result, err := cpclient.Enroll(url, code, name, kind, "dev")
+	if err != nil {
+		output.WriteErrorf("enroll: %v", err)
+		return daemon.ExitExecutorError
+	}
+	enrollFile := filepath.Join(paths.ConfigDir, "controlplane.yaml")
+	if err := cpclient.SaveEnrollment(enrollFile, cpclient.Enrollment{
+		ControlPlaneURL: url,
+		DeploymentID:    result.DeploymentID,
+		DeploymentToken: result.DeploymentToken,
+	}); err != nil {
+		output.WriteErrorf("save enrollment: %v", err)
+		return daemon.ExitConfigError
+	}
+	return writeJSON(map[string]any{
+		"ok":            true,
+		"deployment_id": result.DeploymentID,
+		"saved_to":      enrollFile,
+		"note":          "restart openscoped to start reporting usage metadata",
+	})
 }
 
 func runAgentSkills(paths config.Paths, args []string) int {
@@ -676,12 +826,12 @@ func runAgentSkills(paths config.Paths, args []string) int {
 	systemCmds, _ := admin.LoadSystemCommandsOrDefault(paths)
 
 	type skillEntry struct {
-		App         string            `json:"app"`
-		Action      string            `json:"action"`
-		Description string            `json:"description"`
+		App         string             `json:"app"`
+		Action      string             `json:"action"`
+		Description string             `json:"description"`
 		Parameters  []appdef.Parameter `json:"parameters,omitempty"`
-		Constraints map[string]string `json:"constraints,omitempty"`
-		Context     map[string]any    `json:"context,omitempty"`
+		Constraints map[string]string  `json:"constraints,omitempty"`
+		Context     map[string]any     `json:"context,omitempty"`
 	}
 
 	var skills []skillEntry
@@ -732,11 +882,11 @@ func buildSSHContext(targets admin.SSHTargets, constraints map[string]string) ma
 	if targetAlias != "" {
 		if t, ok := admin.FindSSHTarget(targets, targetAlias); ok {
 			ctx["target"] = map[string]any{
-				"alias":                t.Alias,
-				"host":                 t.Host,
-				"user":                 t.User,
-				"allowed_services":     t.AllowedServices,
-				"allowed_paths":        t.AllowedPaths,
+				"alias":                 t.Alias,
+				"host":                  t.Host,
+				"user":                  t.User,
+				"allowed_services":      t.AllowedServices,
+				"allowed_paths":         t.AllowedPaths,
 				"allowed_path_prefixes": t.AllowedPathPrefixes,
 			}
 		}
@@ -748,11 +898,11 @@ func buildSSHContext(targets admin.SSHTargets, constraints map[string]string) ma
 		available := make([]map[string]any, 0, len(targets.Targets))
 		for _, t := range targets.Targets {
 			available = append(available, map[string]any{
-				"alias":                t.Alias,
-				"host":                 t.Host,
-				"user":                 t.User,
-				"allowed_services":     t.AllowedServices,
-				"allowed_paths":        t.AllowedPaths,
+				"alias":                 t.Alias,
+				"host":                  t.Host,
+				"user":                  t.User,
+				"allowed_services":      t.AllowedServices,
+				"allowed_paths":         t.AllowedPaths,
 				"allowed_path_prefixes": t.AllowedPathPrefixes,
 			})
 		}
@@ -1431,11 +1581,21 @@ func printUsage() {
 	_, _ = fmt.Fprintln(w, "  init [--force]                    Initialize default config (~/.openscope/)")
 	_, _ = fmt.Fprintln(w, "  status                            Show daemon and config status")
 	_, _ = fmt.Fprintln(w, "  doctor                            Run diagnostics and show hints")
+	_, _ = fmt.Fprintln(w, "  plan --file <proposal.yaml>       Review a privilege proposal: consequences,")
+	_, _ = fmt.Fprintln(w, "                                    lint findings, and bounds verdict (no sudo)")
+	_, _ = fmt.Fprintln(w, "      [--json | --html [path]] [--no-open]   Machine output, or an HTML report")
+	_, _ = fmt.Fprintln(w, "  apply --file <proposal.yaml>      Apply a reviewed proposal after confirmation (sudo)")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Agents:")
 	_, _ = fmt.Fprintln(w, "  agent register <id>               Register an agent")
 	_, _ = fmt.Fprintln(w, "  agent list                        List registered agents")
 	_, _ = fmt.Fprintln(w, "  agent skills --agent <id>         Show all provisioned actions for an agent")
+	_, _ = fmt.Fprintln(w, "  agent token mint [--rotate] <id>  Mint a network-broker token (shown once)")
+	_, _ = fmt.Fprintln(w, "  agent token list                  List token prefixes and status")
+	_, _ = fmt.Fprintln(w, "  agent token revoke <id|prefix>    Revoke an agent token")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Control plane (optional):")
+	_, _ = fmt.Fprintln(w, "  enroll --control-plane <url> --code <code>   Register this deployment")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Apps:")
 	_, _ = fmt.Fprintln(w, "  app list                          List available apps and enabled status")

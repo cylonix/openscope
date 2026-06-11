@@ -22,14 +22,14 @@ type SSHTargets struct {
 }
 
 type SSHTarget struct {
-	Alias              string   `yaml:"alias"`
-	Host               string   `yaml:"host"`
-	User               string   `yaml:"user"`
-	Port               int      `yaml:"port,omitempty"`
-	IdentityFile       string   `yaml:"identity_file,omitempty"`
-	ProxyJump          string   `yaml:"proxy_jump,omitempty"`
-	AllowedServices    []string `yaml:"allowed_services,omitempty"`
-	AllowedPaths       []string `yaml:"allowed_paths,omitempty"`
+	Alias               string   `yaml:"alias"`
+	Host                string   `yaml:"host"`
+	User                string   `yaml:"user"`
+	Port                int      `yaml:"port,omitempty"`
+	IdentityFile        string   `yaml:"identity_file,omitempty"`
+	ProxyJump           string   `yaml:"proxy_jump,omitempty"`
+	AllowedServices     []string `yaml:"allowed_services,omitempty"`
+	AllowedPaths        []string `yaml:"allowed_paths,omitempty"`
 	AllowedPathPrefixes []string `yaml:"allowed_path_prefixes,omitempty"`
 }
 
@@ -202,6 +202,14 @@ func normalizeSSHTargets(targets SSHTargets) SSHTargets {
 	})
 	targets.Targets = normalized
 	return targets
+}
+
+// NormalizeSSHTarget exposes the same normalization (trim, clean, dedupe,
+// sort) that AddSSHTarget applies before storing — callers comparing a
+// proposed target against a stored one must normalize first to avoid spurious
+// inequality from unsorted/whitespaced lists.
+func NormalizeSSHTarget(target SSHTarget) SSHTarget {
+	return normalizeSSHTarget(target)
 }
 
 func normalizeSSHTarget(target SSHTarget) SSHTarget {

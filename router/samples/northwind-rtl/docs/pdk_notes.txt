@@ -1,0 +1,14 @@
+NORTHWIND SEMICONDUCTOR — INTERNAL USE ONLY
+Project FALCON — PDK integration notes (synthetic sample)
+
+Foundry:        TSMC
+Process:        N3 node / 3nm process
+PDK:            Process Design Kit v1.4 (under NDA — do not redistribute)
+Std cell lib:   nw_sc3_12track
+
+Notes:
+  - All DRC/LVS decks come from the TSMC N3 PDK and are NDA-restricted.
+  - SPICE device models (analog/bandgap_ref.sp) reference the foundry models;
+    the foundry's process design kit must not leave Northwind's network.
+  - Do not paste PDK rule decks, cell libraries, or device models into any
+    external tool or AI assistant.

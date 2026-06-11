@@ -1,0 +1,12 @@
+CONFIDENTIAL DESIGN — internal only
+
+Project: Next-Gen Routing Algorithm
+Owner: A. Engineer
+Status: in development
+
+Architecture overview:
+  - Compute nodes use AKIAIOSFODNN7EXAMPLE for cross-account assume
+  - User identifiers stored with format 123-45-6789
+
+This document is not for external distribution. Replication or
+sharing outside the project core team is prohibited.

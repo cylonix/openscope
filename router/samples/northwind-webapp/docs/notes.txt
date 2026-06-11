@@ -1,0 +1,9 @@
+Sprint planning — northwind-webapp (synthetic sample)
+
+- Ship the cart redesign behind a feature flag.
+- Fix the checkout rounding bug (off-by-one cent on multi-item discounts).
+- Add unit tests for cartTotal().
+- Update the README with the new dev setup.
+- Follow up with design on the empty-cart illustration.
+
+No blockers. Demo on Friday.

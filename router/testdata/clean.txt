@@ -1,0 +1,11 @@
+Project Hello World
+====================
+
+A simple example program. Prints "Hello, World!" to stdout.
+
+Build steps:
+1. Save as hello.py
+2. Run: python3 hello.py
+3. Verify output is correct
+
+Useful references: https://docs.python.org/3/tutorial/index.html

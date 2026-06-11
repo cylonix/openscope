@@ -1,0 +1,135 @@
+# OpenScope privilege proposal — the typed, reviewable replacement for a
+# hand-run `sudo bash setup.sh`. An agent DRAFTS this; `openscope plan` reviews
+# it and renders consequences + lint findings; `sudo openscope apply` writes it
+# through the broker's own validated admin paths after per-risk confirmation.
+#
+# This file is a faithful conversion of docs/examples/claude-code/openscope
+# setup (the kidfence/openscope-demo mining seed). Review the rendered output
+# in setup.plan.txt alongside it.
+version: 1
+kind: openscope-proposal
+
+metadata:
+  name: claude-code-local-broker
+  # Free text below is AI-authored and rendered in a clearly-marked UNTRUSTED
+  # box; it never feeds the consequence report or the (optional) AI reviewer.
+  description: >
+    Seed config for the claude-code agent, derived from a mining pass over
+    ~/.claude session history (10,560 commands). Everything was observed in use.
+  authored_by:
+    tool: claude-code
+    model: claude-fable-5
+    session: 8d5656ce
+  created_at: 2026-06-10T20:00:00Z
+
+# --- Remote targets (admin.SSHTarget) ----------------------------------------
+ssh_targets:
+  add:
+    - alias: kidfence-prod
+      host: api.kidfence.ai
+      user: root
+      allowed_services: [nginx]
+      allowed_paths: ["/opt/kidfence/compose.yml"]
+      allowed_path_prefixes:
+        - /opt/kidfence/db/logs
+        - /var/lib/kidfence/logs
+        - /var/log
+        - /etc/nginx
+        - /var/www/kidfence.ai
+    - alias: kidfence-www
+      host: kidfence.ai
+      user: root
+      allowed_path_prefixes:
+        - /var/www/kidfence.ai
+        - /var/log/nginx
+    - alias: openscope-demo
+      host: demo.openscopeai.com
+      user: root
+      allowed_services: [openscoped, nginx, fail2ban]
+      allowed_path_prefixes:
+        - /opt/openscope-demo
+        - /root/openscope-web-src
+        - /var/log
+    - alias: trusted-ds
+      host: openscopeai.org
+      user: root
+      allowed_services: [trusted-ds-grid, trusted-ds-bank]
+      allowed_path_prefixes:
+        - /var/log
+
+# --- Local system allow-lists (admin.SystemCommands) -------------------------
+system_commands:
+  packages:
+    managers:
+      add:
+        - {name: brew,  sudo: false, binary: /opt/homebrew/bin/brew}
+        - {name: pip3,  sudo: false, binary: /opt/homebrew/bin/pip3}
+        - {name: npm,   sudo: false, binary: /opt/homebrew/bin/npm}
+    allowed:
+      add: [pytest, fastapi, anthropic, cliclick, jq, llama.cpp]
+  services:
+    allowed:
+      add: [ai.kidfence.mac.daemon, com.ezblock.openscope.openscoped]
+    allow_launchctl: true
+  processes:
+    allowed_signals: {add: [TERM, KILL, HUP]}
+    allowed_names:   {add: [xcodebuild, next, node, python3, http.server, adb, Kidfence]}
+    allow_kill_by_pid: true
+  ports:
+    allowed: {add: [8080, 8765, 8770, 8787]}
+  files:
+    allowed_chmod_prefixes: {add: [/Volumes/2TB-1/src, /tmp]}
+    allowed_chown_prefixes: {add: [/tmp]}
+  apps:
+    allowed_source_prefixes: {add: [/Users/randy/Library/Developer/Xcode/DerivedData, /Volumes/2TB-1/src, /tmp]}
+    allowed_install_dirs:    {add: [/Applications]}
+    allowed_names:           {add: [Kidfence, OpenScope]}
+  builds:
+    allowed_project_prefixes: {add: [/Volumes/2TB-1/src]}
+
+# --- Policy (policy.Rule; constraints keyed by policy_key) --------------------
+policy:
+  add:
+    # Read-only remote inspection on every target.
+    - {effect: allow, agent: claude-code, app: ssh, action: check_host,   constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: host_metrics, constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: read_file,    constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: list_dir,     constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: check_host,   constraints: {target: kidfence-www}}
+    - {effect: allow, agent: claude-code, app: ssh, action: host_metrics, constraints: {target: kidfence-www}}
+    - {effect: allow, agent: claude-code, app: ssh, action: read_file,    constraints: {target: kidfence-www}}
+    - {effect: allow, agent: claude-code, app: ssh, action: list_dir,     constraints: {target: kidfence-www}}
+    - {effect: allow, agent: claude-code, app: ssh, action: check_host,   constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: host_metrics, constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: read_file,    constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: list_dir,     constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: check_host,   constraints: {target: trusted-ds}}
+    - {effect: allow, agent: claude-code, app: ssh, action: host_metrics, constraints: {target: trusted-ds}}
+    - {effect: allow, agent: claude-code, app: ssh, action: read_file,    constraints: {target: trusted-ds}}
+    - {effect: allow, agent: claude-code, app: ssh, action: list_dir,     constraints: {target: trusted-ds}}
+    # Service status + logs where the target declares services.
+    - {effect: allow, agent: claude-code, app: ssh, action: service_status, constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: tail_logs,      constraints: {target: kidfence-prod}}
+    - {effect: allow, agent: claude-code, app: ssh, action: service_status, constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: tail_logs,      constraints: {target: openscope-demo}}
+    - {effect: allow, agent: claude-code, app: ssh, action: service_status, constraints: {target: trusted-ds}}
+    - {effect: allow, agent: claude-code, app: ssh, action: tail_logs,      constraints: {target: trusted-ds}}
+    # Restarts, scoped to a single observed unit each.
+    - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: trusted-ds}}
+    - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: openscope-demo, service: openscoped}}
+    - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: kidfence-prod, service: nginx}}
+    # Local system actions.
+    - {effect: allow, agent: claude-code, app: system, action: manage_packages,  constraints: {manager: brew}}
+    - {effect: allow, agent: claude-code, app: system, action: manage_packages,  constraints: {manager: pip3}}
+    - {effect: allow, agent: claude-code, app: system, action: manage_packages,  constraints: {manager: npm}}
+    - {effect: allow, agent: claude-code, app: system, action: check_port}
+    - {effect: allow, agent: claude-code, app: system, action: release_port}
+    - {effect: allow, agent: claude-code, app: system, action: manage_processes}
+    - {effect: allow, agent: claude-code, app: system, action: manage_services}
+    - {effect: allow, agent: claude-code, app: system, action: manage_files}
+    - {effect: allow, agent: claude-code, app: system, action: manage_apps}
+    - {effect: allow, agent: claude-code, app: system, action: build}
+    # Defense in depth: deny overrides allow regardless of order.
+    - {effect: deny, agent: claude-code, app: system, action: manage_services, constraints: {service: com.apple.mDNSResponder}}
+    - {effect: deny, agent: claude-code, app: system, action: manage_services, constraints: {service: com.apple.sharingd}}
+    - {effect: deny, agent: claude-code, app: system, action: manage_services, constraints: {service: com.apple.identityservicesd}}

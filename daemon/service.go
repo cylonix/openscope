@@ -14,11 +14,8 @@ import (
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/audit"
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/executor"
-	appleexec "github.com/openscope/openscope/executor/applescript"
-	"github.com/openscope/openscope/executor/httpexec"
-	"github.com/openscope/openscope/executor/sshexec"
-	"github.com/openscope/openscope/executor/systemexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
@@ -33,6 +30,7 @@ const (
 	ExitExecutorError = 5
 	ExitConfigError   = 6
 	ExitIPCError      = 7
+	ExitRateLimited   = 8
 )
 
 type loadedApp struct {
@@ -43,18 +41,38 @@ type loadedApp struct {
 type Service struct {
 	Paths     config.Paths
 	Executors map[string]executor.Runner
+
+	// Usage, when set, receives one metadata-only event per audited
+	// decision (the control-plane metering hook). It must be non-blocking;
+	// cpclient.Client.Record satisfies that. Never receives params/bodies.
+	Usage func(cpclient.UsageEvent)
+
+	// meta carries per-request transport context (set by HandleWithMeta on
+	// the value copy; Service is used by value so this never races).
+	meta RequestMeta
+}
+
+// RequestMeta is transport context recorded on audit events. Empty for
+// local Unix-socket requests.
+type RequestMeta struct {
+	RequestID   string
+	Transport   string // "unix" | "http"
+	RemoteAddr  string
+	TokenPrefix string
 }
 
 func NewService(paths config.Paths) Service {
 	return Service{
-		Paths: paths,
-		Executors: map[string]executor.Runner{
-			"applescript": appleexec.Executor{},
-			"http":        httpexec.Executor{Paths: paths},
-			"ssh":         sshexec.Executor{Paths: paths},
-			"system":      systemexec.Executor{Paths: paths},
-		},
+		Paths:     paths,
+		Executors: defaultExecutors(paths),
 	}
+}
+
+// HandleWithMeta runs Handle with transport context attached to every audit
+// event the request produces.
+func (s Service) HandleWithMeta(request ipc.Request, meta RequestMeta) ipc.Response {
+	s.meta = meta
+	return s.Handle(request)
 }
 
 func (s Service) Handle(request ipc.Request) ipc.Response {
@@ -304,14 +322,41 @@ func loadBundledDefinitions() ([]appdef.Definition, error) {
 }
 
 func (s Service) recordAudit(event audit.Event) {
+	event.RequestID = s.meta.RequestID
+	event.Transport = s.meta.Transport
+	event.RemoteAddr = s.meta.RemoteAddr
+	event.TokenPrefix = s.meta.TokenPrefix
 	_ = audit.Append(s.Paths.AuditFile, event)
+
+	// Control-plane metering: the audit event minus params (metadata only).
+	if s.Usage != nil {
+		s.Usage(cpclient.UsageEvent{
+			Timestamp: event.Timestamp,
+			RequestID: event.RequestID,
+			Kind:      "action",
+			App:       event.App,
+			Action:    event.Action,
+			Decision:  event.Decision,
+			Result:    event.Result,
+		})
+	}
 }
 
+// executorFor returns the runner for the app's declared executor, or an
+// error runner when the executor is unknown or unavailable on this
+// platform (e.g. applescript on a Linux broker). It must never silently
+// fall back to a different executor.
 func (s Service) executorFor(def appdef.Definition) executor.Runner {
 	if runner, ok := s.Executors[def.App.Executor]; ok {
 		return runner
 	}
-	return appleexec.Executor{}
+	return unavailableExecutor{name: def.App.Executor}
+}
+
+type unavailableExecutor struct{ name string }
+
+func (u unavailableExecutor) Run(appdef.Definition, string, map[string]string) (executor.Result, error) {
+	return executor.Result{}, fmt.Errorf("executor %q is not available on this platform", u.name)
 }
 
 func normalizeOutput(defMode, requestMode, stdout string) any {

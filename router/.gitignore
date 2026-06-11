@@ -1,0 +1,5 @@
+dist/
+deploy/.env
+deploy/.env.*
+web/node_modules/
+web/.next/
