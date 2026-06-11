@@ -85,4 +85,6 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/v1/c
 echo "    401 OK"
 
 echo "==> SMOKE PASSED"
-[[ $KEEP -eq 1 ]] && echo "(stack left running: --keep)"
+if [[ $KEEP -eq 1 ]]; then
+    echo "(stack left running: --keep)"
+fi
