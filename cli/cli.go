@@ -98,6 +98,8 @@ func Run(args []string) int {
 		return runPlan(paths, args[1:])
 	case "apply":
 		return runApply(paths, args[1:])
+	case "capabilities", "caps":
+		return runCapabilities(paths, args[1:])
 	default:
 		return runProtectedAction(paths, args)
 	}
@@ -337,6 +339,239 @@ func runPolicyAddRule(paths config.Paths, effect string, args []string) int {
 		"added": added,
 		"rule":  rule,
 	})
+}
+
+// capParam describes one parameter of an allowed action: its flag, whether the
+// policy already pins it to a fixed value, and (for free params) a hint of what
+// values are valid — sourced from the ssh target's allow-lists.
+type capParam struct {
+	Flag     string `json:"flag"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+	Fixed    string `json:"fixed,omitempty"`
+	Hint     string `json:"hint,omitempty"`
+}
+
+// capability is one thing an agent may do, rendered as a ready-to-run command.
+type capability struct {
+	App         string     `json:"app"`
+	Action      string     `json:"action"`
+	Description string     `json:"description"`
+	Command     string     `json:"command"`
+	Params      []capParam `json:"params,omitempty"`
+	Note        string     `json:"note,omitempty"`
+}
+
+// runCapabilities renders, for one agent, the actions it is currently allowed
+// to run and the exact command form for each — joined live from the policy
+// (allow rules), the app definitions (parameter shapes), and the ssh targets
+// (valid values). It is GENERATED from root-owned config, so a policy change is
+// reflected immediately and an agent never needs its instructions rewritten to
+// learn a new (or forget a removed) action. This is the self-describing surface
+// the `openscope` skill teaches agents to consult before calling.
+func runCapabilities(paths config.Paths, args []string) int {
+	flags, err := parseFlags(args)
+	if err != nil {
+		output.WriteErrorf("parse flags: %v", err)
+		return daemon.ExitInvalid
+	}
+	agentID := flags["agent"]
+	if agentID == "" {
+		output.WriteErrorf("usage: openscope capabilities --agent <agent_id> [--json]")
+		return daemon.ExitInvalid
+	}
+
+	pf, err := policy.LoadDefault(paths)
+	if err != nil {
+		output.WriteErrorf("load policy: %v", err)
+		return daemon.ExitConfigError
+	}
+	defs, err := loadAllDefinitions(paths)
+	if err != nil {
+		output.WriteErrorf("load app definitions: %v", err)
+		return daemon.ExitConfigError
+	}
+	targets, _ := admin.LoadSSHTargetsOrDefault(paths) // best-effort value hints
+
+	var allows, denies []policy.Rule
+	for _, r := range pf.Rules {
+		if r.Agent != agentID {
+			continue
+		}
+		if r.Effect == "deny" {
+			denies = append(denies, r)
+		} else {
+			allows = append(allows, r)
+		}
+	}
+
+	caps := make([]capability, 0, len(allows))
+	for _, r := range allows {
+		caps = append(caps, buildCapability(agentID, r, defs, targets))
+	}
+	sort.SliceStable(caps, func(i, j int) bool {
+		if caps[i].App != caps[j].App {
+			return caps[i].App < caps[j].App
+		}
+		if caps[i].Action != caps[j].Action {
+			return caps[i].Action < caps[j].Action
+		}
+		return caps[i].Command < caps[j].Command
+	})
+
+	if flags["json"] == "true" {
+		return writeJSON(map[string]any{
+			"agent":        agentID,
+			"capabilities": caps,
+			"denied":       denyViews(denies),
+		})
+	}
+	printCapabilities(agentID, caps, denies)
+	return daemon.ExitOK
+}
+
+func buildCapability(agentID string, r policy.Rule, defs map[string]appdef.Definition, targets admin.SSHTargets) capability {
+	c := capability{App: r.App, Action: r.Action}
+	base := fmt.Sprintf("openscope %s %s --agent %s", r.App, r.Action, agentID)
+
+	def, ok := defs[r.App]
+	if !ok {
+		c.Command, c.Note = base, "no such app in the current definitions — this allow rule is inert"
+		return c
+	}
+	action, ok := def.Action(r.Action)
+	if !ok {
+		c.Command, c.Note = base, "no such action for this app — this allow rule is inert"
+		return c
+	}
+	c.Description = action.Description
+
+	// The ssh target this rule is scoped to (if any), for value hints.
+	var tgt admin.SSHTarget
+	var haveTgt bool
+	if alias := r.Constraints["target"]; alias != "" {
+		tgt, haveTgt = admin.FindSSHTarget(targets, alias)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(base)
+	for _, p := range action.Parameters {
+		key := p.PolicyKey
+		if key == "" {
+			key = p.Name
+		}
+		cp := capParam{Flag: "--" + p.Name, Type: p.Type, Required: p.Required}
+		if fixed, pinned := r.Constraints[key]; pinned {
+			cp.Fixed = fixed
+			fmt.Fprintf(&sb, " --%s %s", p.Name, fixed)
+		} else {
+			if p.Required {
+				fmt.Fprintf(&sb, " --%s <%s>", p.Name, p.Name)
+			} else {
+				fmt.Fprintf(&sb, " [--%s <%s>]", p.Name, p.Name)
+			}
+			cp.Hint = paramHint(r.App, p, haveTgt, tgt, targets)
+		}
+		c.Params = append(c.Params, cp)
+	}
+	c.Command = sb.String()
+	return c
+}
+
+// paramHint suggests valid values for a FREE parameter, sourced from the ssh
+// target's allow-lists (or the configured target list), so the agent can fill
+// the command in without guessing — and so the hint tracks config, not a doc.
+func paramHint(app string, p appdef.Parameter, haveTgt bool, tgt admin.SSHTarget, targets admin.SSHTargets) string {
+	key := p.PolicyKey
+	if key == "" {
+		key = p.Name
+	}
+	switch {
+	case app == "ssh" && key == "target":
+		var aliases []string
+		for _, t := range targets.Targets {
+			aliases = append(aliases, t.Alias)
+		}
+		if len(aliases) > 0 {
+			return "one of: " + strings.Join(aliases, ", ")
+		}
+	case app == "ssh" && (p.Constraint == "service" || key == "service"):
+		if haveTgt && len(tgt.AllowedServices) > 0 {
+			return "allowed services: " + strings.Join(tgt.AllowedServices, ", ")
+		}
+		return "must be one of the target's allowed_services"
+	case app == "ssh" && (p.Constraint == "path" || key == "path"):
+		if haveTgt {
+			scopes := append([]string{}, tgt.AllowedPaths...)
+			for _, pre := range tgt.AllowedPathPrefixes {
+				scopes = append(scopes, pre+"/*")
+			}
+			if len(scopes) > 0 {
+				return "under: " + strings.Join(scopes, ", ")
+			}
+		}
+		return "must satisfy the target's allowed_paths/allowed_path_prefixes"
+	}
+	return ""
+}
+
+func denyViews(denies []policy.Rule) []map[string]any {
+	out := make([]map[string]any, 0, len(denies))
+	for _, r := range denies {
+		out = append(out, map[string]any{"app": r.App, "action": r.Action, "constraints": r.Constraints})
+	}
+	return out
+}
+
+func printCapabilities(agentID string, caps []capability, denies []policy.Rule) {
+	fmt.Printf("OpenScope capabilities for agent %q\n", agentID)
+	fmt.Println("(generated live from policy + app definitions — re-run after any policy change; do not memorize the list)")
+	fmt.Println()
+	if len(caps) == 0 {
+		fmt.Println("  (no allowed actions — this agent has no allow rules)")
+	}
+	lastApp := ""
+	for _, c := range caps {
+		if c.App != lastApp {
+			fmt.Println(c.App)
+			lastApp = c.App
+		}
+		desc := c.Description
+		if c.Note != "" {
+			desc = c.Note
+		}
+		fmt.Printf("  %-16s %s\n", c.Action, desc)
+		fmt.Printf("    %s\n", c.Command)
+		for _, p := range c.Params {
+			if p.Hint != "" {
+				fmt.Printf("      %s — %s\n", p.Flag, p.Hint)
+			}
+		}
+	}
+	if len(denies) > 0 {
+		fmt.Println()
+		fmt.Println("Denied (deny overrides allow):")
+		for _, r := range denies {
+			scope := ""
+			if len(r.Constraints) > 0 {
+				keys := make([]string, 0, len(r.Constraints))
+				for k := range r.Constraints {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				parts := make([]string, 0, len(keys))
+				for _, k := range keys {
+					parts = append(parts, k+"="+r.Constraints[k])
+				}
+				scope = "  " + strings.Join(parts, " ")
+			}
+			fmt.Printf("  %s %s%s\n", r.App, r.Action, scope)
+		}
+	}
+	fmt.Println()
+	fmt.Println("Notes:")
+	fmt.Println("  - Valid targets/paths/services: `openscope ssh targets list`. Local allow-lists: `openscope system commands list`.")
+	fmt.Println("  - Exit 3 = denied by policy (report it; do not work around). Exit 4 = unknown action (re-run this — the surface may have changed).")
 }
 
 func runNotesBlacklist(paths config.Paths, args []string) int {
@@ -1740,7 +1975,8 @@ func printUsage() {
 	_, _ = fmt.Fprintln(w, "Agents:")
 	_, _ = fmt.Fprintln(w, "  agent register <id>               Register an agent")
 	_, _ = fmt.Fprintln(w, "  agent list                        List registered agents")
-	_, _ = fmt.Fprintln(w, "  agent skills --agent <id>         Show all provisioned actions for an agent")
+	_, _ = fmt.Fprintln(w, "  agent skills --agent <id>         Show all provisioned actions for an agent (raw JSON)")
+	_, _ = fmt.Fprintln(w, "  capabilities --agent <id> [--json]  What an agent may do, as ready-to-run commands")
 	_, _ = fmt.Fprintln(w, "  agent token mint [--rotate] <id>  Mint a network-broker token (shown once)")
 	_, _ = fmt.Fprintln(w, "  agent token list                  List token prefixes and status")
 	_, _ = fmt.Fprintln(w, "  agent token revoke <id|prefix>    Revoke an agent token")

@@ -117,6 +117,11 @@ sudo openscope policy deny  --agent <id> --app <app> --action <action> [--<param
 openscope agent register <agent-id>
 openscope agent list
 
+# Capabilities — what an agent may do, as ready-to-run commands (generated live
+# from policy + app definitions + targets). This is what an agent consults to
+# learn the current actions and exact command format; it tracks policy changes.
+openscope capabilities --agent <agent-id>          # add --json for structured output
+
 # Protected Notes folder blacklist
 openscope notes blacklist list
 sudo openscope notes blacklist add private
@@ -263,6 +268,25 @@ actions, and per-agent policy, see the guide in
 and the working Claude Code files in
 [`docs/examples/claude-code/`](docs/examples/claude-code/).
 
+**Teach the agent once, let it discover the rest.** Don't hand the agent a static
+list of actions that drifts when policy changes. Instead give it a small, stable
+guide and a self-describing CLI:
+
+- The guide is a skill — [`docs/examples/claude-code/skills/openscope/SKILL.md`](docs/examples/claude-code/skills/openscope/SKILL.md).
+  Copy it to `~/.claude/skills/openscope/` (Claude Code), or adapt the same text
+  into `AGENTS.md` for other tools. It teaches one rule: *for privileged or
+  production access, route through `openscope`, and ask the broker what you may do
+  before calling.*
+- The agent then discovers the live surface with
+  `openscope capabilities --agent <id>` — generated from the root-owned policy +
+  app definitions + targets, so a new or removed action shows up immediately with
+  no change to the agent. The agent fills the command, caches it, and re-checks
+  only when a call returns exit 3 (denied) or 4 (action moved).
+
+A PreToolUse guard hook ([`docs/examples/claude-code/openscope-guard.sh`](docs/examples/claude-code/openscope-guard.sh))
+backs this up: it denies raw `ssh`/`sudo` to governed hosts and points the agent
+at the skill. The skill teaches, the broker is the authority, the hook is the net.
+
 ## OpenClaw Integration
 
 If you want to use OpenScope as the security boundary for an OpenClaw agent:
@@ -299,10 +323,5 @@ BSD 3-Clause — see [LICENSE](LICENSE).
 
 ## Maintainer
 
-Built and maintained by [Randy Huang](https://linkedin.com/in/randyhuang-0b71968), 
-sole engineer. Previously: Co-founder/Head of Technology at ARO Network; 
-Founder/CEO at Cylonix; 19 years at Cisco on networking processors and 
-capability infrastructure (the same engineering pattern, applied to a 
-new actor).
-
+Built and maintained by [Randy Huang](https://linkedin.com/in/randyhuang-0b71968) 
 Contact: randy@cylonix.io · [github.com/cylonix](https://github.com/cylonix)
