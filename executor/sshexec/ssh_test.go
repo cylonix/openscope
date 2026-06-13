@@ -64,9 +64,12 @@ func TestExecutorTailLogsBuildsFixedSSHCommand(t *testing.T) {
 	if len(runner.args) < 8 {
 		t.Fatalf("expected ssh args to be populated, got %#v", runner.args)
 	}
-	remoteArgs := runner.args[len(runner.args)-6:]
-	if strings.Join(remoteArgs, " ") != "journalctl -u web -n 25 --no-pager" {
-		t.Fatalf("unexpected ssh args: %#v", runner.args)
+	// The remote command is one ssh argument: ssh space-joins remote args and
+	// the far-side shell re-parses, so each token is shell-quoted and joined
+	// into a single string here (not handed to ssh as separate argv elements).
+	remoteCommand := runner.args[len(runner.args)-1]
+	if remoteCommand != "'journalctl' '-u' 'web' '-n' '25' '--no-pager'" {
+		t.Fatalf("unexpected remote command: %q (all args: %#v)", remoteCommand, runner.args)
 	}
 
 	var payload map[string]any
@@ -75,6 +78,44 @@ func TestExecutorTailLogsBuildsFixedSSHCommand(t *testing.T) {
 	}
 	if payload["service"] != "web" {
 		t.Fatalf("expected payload to include service, got %#v", payload)
+	}
+}
+
+// Regression: a host-inspection verb's command must reach the remote host as a
+// SINGLE shell-safe argument. It previously went out as separate ssh args
+// ("sh", "-lc", "printf '%s\n' ..."); ssh space-joins remote args and the
+// far-side login shell re-parses, so `sh -c`'s argument collapsed to just
+// "printf" and check_host/host_metrics failed with "printf: usage". The whole
+// wrapped command — printf format string included — must now arrive intact in
+// one argument.
+func TestExecutorCheckHostSendsSingleRemoteCommand(t *testing.T) {
+	runner := &stubRunner{result: executor.Result{Stdout: "h\nu\n0\nLinux\n6.1\n", ExitCode: 0}}
+	exec := Executor{Paths: writeTargetPaths(t), Runner: runner}
+
+	if _, err := exec.Run(appdef.Definition{}, "check_host", map[string]string{"target": "prod-api-1"}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	// Exactly one remote argument after the host — not split into sh/-lc/printf.
+	host := "deploy@prod-api-1.internal"
+	hostIdx := -1
+	for i, a := range runner.args {
+		if a == host {
+			hostIdx = i
+		}
+	}
+	if hostIdx == -1 || hostIdx != len(runner.args)-2 {
+		t.Fatalf("expected exactly one remote arg after host; args=%#v", runner.args)
+	}
+
+	// That one argument carries the whole wrapped command, with the printf
+	// format string still attached to printf (losing it was the old symptom).
+	// The inner command is shell-quoted, so its own single quotes become '\''.
+	remoteCommand := runner.args[len(runner.args)-1]
+	for _, want := range []string{"'sh' '-lc'", "printf", "%s\\n", "$(hostname)", "$(uname -r)"} {
+		if !strings.Contains(remoteCommand, want) {
+			t.Fatalf("remote command missing %q; got single arg %q", want, remoteCommand)
+		}
 	}
 }
 
@@ -313,5 +354,27 @@ func TestExecutorRefusesAgentReadableKey(t *testing.T) {
 	}
 	if runner.name != "" {
 		t.Fatal("ssh must not run when the key is refused")
+	}
+}
+
+// The broker's real ssh uses accept-new + a broker-owned, root-owned
+// known_hosts — host-key trust belongs to the broker, and a changed key is
+// rejected, without pre-seeding every host.
+func TestExecutorUsesAcceptNewAndBrokerKnownHosts(t *testing.T) {
+	runner := &stubRunner{result: executor.Result{Stdout: "x\nx\nx\nx\nx\n", ExitCode: 0}}
+	exec := Executor{Paths: writeTargetPaths(t), Runner: runner}
+
+	if _, err := exec.Run(appdef.Definition{}, "check_host", map[string]string{"target": "prod-api-1"}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	joined := strings.Join(runner.args, " ")
+	if !strings.Contains(joined, "StrictHostKeyChecking=accept-new") {
+		t.Errorf("expected accept-new, got: %s", joined)
+	}
+	if !strings.Contains(joined, "UserKnownHostsFile="+brokerSSHDir+"/known_hosts") {
+		t.Errorf("expected broker-owned known_hosts, got: %s", joined)
+	}
+	if strings.Contains(joined, "StrictHostKeyChecking=yes") {
+		t.Error("must not use the brittle =yes anymore")
 	}
 }

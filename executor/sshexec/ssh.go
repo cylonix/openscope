@@ -6,6 +6,7 @@ package sshexec
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,11 @@ import (
 )
 
 var servicePattern = regexp.MustCompile(`^[A-Za-z0-9@_.:-]+$`)
+
+// brokerSSHDir holds the broker's root-owned ssh material — keys and the
+// known_hosts the executor verifies against — outside any user's reach. Host-key
+// trust belongs to the broker, not to whichever user happens to run ssh.
+const brokerSSHDir = "/var/openscope/ssh"
 
 type CommandRunner interface {
 	Run(name string, args []string, stdin string) (executor.Result, error)
@@ -316,22 +322,47 @@ func (e Executor) runSSH(target admin.SSHTarget, remoteCommand string) (string, 
 	return e.runSSHArgs(target, "sh", "-lc", remoteCommand)
 }
 
+// runSSHArgs runs a remote command supplied as separate argv tokens. ssh does
+// NOT preserve those tokens as an argv on the far side: it space-joins whatever
+// remote args it's given into ONE string and hands that to the remote login
+// shell, which re-parses it. So passing the tokens separately lets the remote
+// shell re-split any token that contains whitespace or metacharacters — most
+// visibly the command string handed to `sh -lc`, which collapsed to just its
+// first word ("printf"), and the host-inspection verbs failed with a usage
+// error. Shell-quote each token and join here so the remote shell reconstructs
+// exactly these tokens — the same single-quoted-command-string discipline that
+// readFile/listDir/runCommandAction apply directly via shellQuote.
 func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (string, error) {
-	return e.runRemote(target, "", remoteArgs...)
+	quoted := make([]string, len(remoteArgs))
+	for i, a := range remoteArgs {
+		quoted[i] = shellQuote(a)
+	}
+	return e.runRemote(target, "", strings.Join(quoted, " "))
 }
 
 // runRemote invokes ssh against target, optionally piping stdin to the remote
-// command, and returns its stdout. remoteArgs are the command sent to the
-// remote host (ssh joins them and hands the result to the login shell).
-func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteArgs ...string) (string, error) {
+// command, and returns its stdout. remoteCommand is a single, already
+// shell-safe command string (callers either build one directly or go through
+// runSSHArgs, which quotes+joins its tokens) — it becomes the one remote
+// argument ssh hands to the login shell.
+func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteCommand string) (string, error) {
 	runner := e.Runner
 	if runner == nil {
 		runner = execRunner{}
 	}
 
+	// Broker-owned, root-owned known_hosts so host-key trust belongs to the
+	// broker (not whoever runs ssh) and the agent can't tamper with it.
+	// accept-new trusts a host on first connect and records it, but REJECTS a
+	// CHANGED key — MITM-after-first-connect protection without the operational
+	// brittleness of pre-seeding every host.
+	knownHosts := filepath.Join(brokerSSHDir, "known_hosts")
+	_ = os.MkdirAll(brokerSSHDir, 0o700) // best-effort; the root daemon can create it
+
 	args := []string{
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=yes",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + knownHosts,
 	}
 	if target.Port > 0 {
 		args = append(args, "-p", strconv.Itoa(target.Port))
@@ -343,7 +374,7 @@ func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteArgs ...
 		args = append(args, "-J", target.ProxyJump)
 	}
 	args = append(args, target.User+"@"+target.Host)
-	args = append(args, remoteArgs...)
+	args = append(args, remoteCommand)
 
 	result, err := runner.Run("ssh", args, stdin)
 	if err != nil {
