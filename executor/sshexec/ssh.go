@@ -21,7 +21,7 @@ import (
 var servicePattern = regexp.MustCompile(`^[A-Za-z0-9@_.:-]+$`)
 
 type CommandRunner interface {
-	Run(name string, args []string) (executor.Result, error)
+	Run(name string, args []string, stdin string) (executor.Result, error)
 }
 
 type Executor struct {
@@ -46,7 +46,20 @@ func (e Executor) Run(def appdef.Definition, actionName string, params map[strin
 
 	warnings := AuditKeyProtection(target, e.Paths.HomeDir)
 
-	payload, err := e.runAction(target, actionName, params)
+	// Enforce key custody at the point of use. The executor runs as root (the
+	// privileged daemon), so — unlike the user-vantage planner — it can read a
+	// 0700 key dir and verify the actual key files. If the configured key is
+	// agent-readable or not a usable root-owned key, refuse: a key the agent can
+	// read lets it ssh directly, bypassing the broker entirely.
+	for _, w := range warnings {
+		if AgentAccessible(w.Code) {
+			return executor.Result{}, fmt.Errorf(
+				"refusing ssh action for target %q: brokered key is agent-accessible or invalid — %s",
+				target.Alias, w.Message)
+		}
+	}
+
+	payload, err := e.runAction(def, target, actionName, params)
 	if err != nil {
 		return executor.Result{}, err
 	}
@@ -62,7 +75,14 @@ func (e Executor) Run(def appdef.Definition, actionName string, params map[strin
 	return executor.Result{Stdout: string(data), ExitCode: 0}, nil
 }
 
-func (e Executor) runAction(target admin.SSHTarget, actionName string, params map[string]string) (map[string]any, error) {
+// runAction dispatches an action to its handler. The seven curated actions
+// below ship structured, parsed output — they are the default verb set, not a
+// limit. Any OTHER action is driven by the `command:` template in its app
+// definition (runCommandAction): OpenScope brokers what the YAML declares and
+// policy allows, it does not cap the verb set. The daemon has already verified
+// the action exists in the (root-applied) app definition and that an allow rule
+// grants it before we get here.
+func (e Executor) runAction(def appdef.Definition, target admin.SSHTarget, actionName string, params map[string]string) (map[string]any, error) {
 	switch actionName {
 	case "check_host":
 		return e.checkHost(target)
@@ -103,8 +123,64 @@ func (e Executor) runAction(target admin.SSHTarget, actionName string, params ma
 	case "host_metrics":
 		return e.hostMetrics(target)
 	default:
-		return nil, fmt.Errorf("unsupported ssh action %q", actionName)
+		return e.runCommandAction(def, target, actionName, params)
 	}
+}
+
+// runCommandAction executes a user-defined ssh verb from its app-definition
+// `command:` template. Each declared parameter is resolved — path/service
+// parameters against the target's admin allow-lists, others as free input — and
+// shell-quoted before substitution, so no parameter value can break out of the
+// template into an injected command. Optional `stdin:` content is piped to the
+// remote command (e.g. file bytes for a write verb) and is NOT shell-quoted, as
+// it never touches the command line.
+func (e Executor) runCommandAction(def appdef.Definition, target admin.SSHTarget, actionName string, params map[string]string) (map[string]any, error) {
+	action, ok := def.Action(actionName)
+	if !ok {
+		// Should not happen — the daemon already resolved the action — but keep
+		// a clear error for direct executor callers/tests.
+		return nil, fmt.Errorf("unknown ssh action %q", actionName)
+	}
+	if strings.TrimSpace(action.Command) == "" {
+		return nil, fmt.Errorf("ssh action %q declares no command — add a `command:` template to its app definition", actionName)
+	}
+
+	subs := make(map[string]string, len(action.Parameters))
+	for _, p := range action.Parameters {
+		raw := params[p.Name]
+		switch p.Constraint {
+		case "path":
+			v, err := requireAllowedPath(target, raw)
+			if err != nil {
+				return nil, err
+			}
+			subs[p.Name] = shellQuote(v)
+		case "service":
+			v, err := requireAllowedService(target, raw)
+			if err != nil {
+				return nil, err
+			}
+			subs[p.Name] = shellQuote(v)
+		default:
+			if strings.ContainsRune(raw, 0) {
+				return nil, fmt.Errorf("parameter %q contains a NUL byte", p.Name)
+			}
+			subs[p.Name] = shellQuote(raw)
+		}
+	}
+
+	command := substitute(action.Command, subs)
+	stdin := substituteRaw(action.Stdin, params)
+
+	stdout, err := e.runRemote(target, stdin, command)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"target": target.Alias,
+		"action": actionName,
+		"output": strings.TrimRight(stdout, "\n"),
+	}, nil
 }
 
 func (e Executor) checkHost(target admin.SSHTarget) (map[string]any, error) {
@@ -190,7 +266,11 @@ func (e Executor) tailLogs(target admin.SSHTarget, service string, lines int) (m
 }
 
 func (e Executor) readFile(target admin.SSHTarget, path string) (map[string]any, error) {
-	stdout, err := e.runSSHArgs(target, "cat", path)
+	// Quote the path into a single remote command string rather than relying on
+	// ssh's argument joining: a path under an allowed prefix can still contain
+	// shell metacharacters (e.g. "/var/log/x; rm -rf /"), and ssh would hand the
+	// joined args to the remote shell. shellQuote makes the path a literal.
+	stdout, err := e.runRemote(target, "", "cat -- "+shellQuote(path))
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +282,7 @@ func (e Executor) readFile(target admin.SSHTarget, path string) (map[string]any,
 }
 
 func (e Executor) listDir(target admin.SSHTarget, path string) (map[string]any, error) {
-	stdout, err := e.runSSHArgs(target, "ls", "-1A", path)
+	stdout, err := e.runRemote(target, "", "ls -1A -- "+shellQuote(path))
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +317,13 @@ func (e Executor) runSSH(target admin.SSHTarget, remoteCommand string) (string, 
 }
 
 func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (string, error) {
+	return e.runRemote(target, "", remoteArgs...)
+}
+
+// runRemote invokes ssh against target, optionally piping stdin to the remote
+// command, and returns its stdout. remoteArgs are the command sent to the
+// remote host (ssh joins them and hands the result to the login shell).
+func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteArgs ...string) (string, error) {
 	runner := e.Runner
 	if runner == nil {
 		runner = execRunner{}
@@ -258,7 +345,7 @@ func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (stri
 	args = append(args, target.User+"@"+target.Host)
 	args = append(args, remoteArgs...)
 
-	result, err := runner.Run("ssh", args)
+	result, err := runner.Run("ssh", args, stdin)
 	if err != nil {
 		return "", err
 	}
@@ -277,8 +364,11 @@ func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (stri
 
 type execRunner struct{}
 
-func (execRunner) Run(name string, args []string) (executor.Result, error) {
+func (execRunner) Run(name string, args []string, stdin string) (executor.Result, error) {
 	cmd := exec.Command(name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -295,6 +385,39 @@ func (execRunner) Run(name string, args []string) (executor.Result, error) {
 		return result, nil
 	}
 	return executor.Result{}, fmt.Errorf("run %s: %w", name, err)
+}
+
+var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
+
+// substitute replaces each {name} placeholder in a command template with its
+// (already shell-quoted) value from subs in a single pass, so a quoted value
+// that happens to contain "{...}" is never re-expanded. Unknown placeholders
+// are left intact (validation rejects them at app-load time).
+func substitute(tmpl string, subs map[string]string) string {
+	return placeholderRE.ReplaceAllStringFunc(tmpl, func(m string) string {
+		if v, ok := subs[m[1:len(m)-1]]; ok {
+			return v
+		}
+		return m
+	})
+}
+
+// substituteRaw fills a stdin template with raw (unquoted) parameter values —
+// stdin is piped to the remote command, never parsed as a command line.
+func substituteRaw(tmpl string, params map[string]string) string {
+	if tmpl == "" {
+		return ""
+	}
+	return placeholderRE.ReplaceAllStringFunc(tmpl, func(m string) string {
+		return params[m[1:len(m)-1]]
+	})
+}
+
+// shellQuote wraps s in single quotes so the remote POSIX shell treats it as a
+// single literal token, escaping any embedded single quotes. This is what makes
+// substituting arbitrary parameter values into a command template injection-safe.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func requireAllowedService(target admin.SSHTarget, service string) (string, error) {

@@ -113,3 +113,31 @@ actions:
       mode: json
       schema: ssh_host_metrics
     script: host_metrics
+
+  # write_file is the canonical command-template action: it has no built-in Go
+  # handler — the ssh executor runs this `command:` directly. `path` is bound to
+  # the target's allowed_paths/allowed_path_prefixes (constraint: path) and the
+  # content is piped over stdin, so no file content touches the command line.
+  # It still requires a root-applied policy allow rule + target; `openscope plan`
+  # surfaces it as an SSH-WRITE finding to confirm. This is the example to copy
+  # for any other verb (define your own in ~/.openscope/apps.d/<app>.yaml with
+  # executor: ssh).
+  write_file:
+    description: Write content (via stdin) to an approved path on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: path
+        type: string
+        required: true
+        policy_key: path
+        constraint: path
+      - name: content
+        type: string
+        required: true
+    command: "cat > {path}"
+    stdin: "{content}"
+    output:
+      mode: json

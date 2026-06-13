@@ -16,14 +16,37 @@ import (
 	"github.com/openscope/openscope/resources"
 )
 
-type Executor struct{}
+type Executor struct {
+	// Helper executes the rendered Apple-event request. nil means "run asapple
+	// locally" — correct when the daemon is in the user's GUI session (the
+	// per-user LaunchAgent). A root LaunchDaemon (phase 4) is not in the GUI
+	// session and cannot hold the Notes/Mail TCC grant, so it injects a
+	// forwarder that hands the request to the user-session agent which does.
+	Helper helperRunner
+}
+
+// helperRunner runs one Apple-event action and returns its result. Splitting it
+// out lets the root daemon delegate Apple-event execution to the TCC-holding
+// session agent while still doing policy + audit itself.
+type helperRunner interface {
+	run(def appdef.Definition, actionName string, params map[string]string) (executor.Result, error)
+}
 
 type runnerRequest struct {
 	ScriptPath string            `json:"scriptPath"`
 	Params     map[string]string `json:"params"`
 }
 
-func (Executor) Run(def appdef.Definition, actionName string, params map[string]string) (executor.Result, error) {
+func (e Executor) Run(def appdef.Definition, actionName string, params map[string]string) (executor.Result, error) {
+	if e.Helper != nil {
+		return e.Helper.run(def, actionName, params)
+	}
+	return localRun(def, actionName, params)
+}
+
+// localRun spawns asapple in this process's session (the legacy/personal model
+// and, in phase 4, the user-session agent's side of the handoff).
+func localRun(def appdef.Definition, actionName string, params map[string]string) (executor.Result, error) {
 	action, ok := def.Action(actionName)
 	if !ok {
 		return executor.Result{}, fmt.Errorf("unknown action %q", actionName)

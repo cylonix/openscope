@@ -156,8 +156,10 @@ sudo openscope policy allow --agent my-agent --app notes --action read_note  --f
 sudo openscope policy deny --agent my-agent --app notes --action list_notes --folder Private
 ```
 
-Policy is stored in `~/.openscope/policies.yaml`. Every allow and deny decision is
-appended to `~/.openscope/audit.jsonl`.
+Policy is stored root-owned in the admin dir (`/Library/Application Support/OpenScope`
+on macOS, `/etc/openscope` elsewhere) and written only via `sudo openscope apply` /
+`sudo openscope policy`, so a process running as your user cannot edit the rules that
+confine it. Every allow and deny decision is appended to `~/.openscope/audit.jsonl`.
 
 OpenScope also enforces a root-owned protected-folder blacklist in
 `/Library/Application Support/OpenScope/protected_folders.yaml`. By default,
@@ -168,6 +170,20 @@ For brokered HTTP integrations such as Jira, root-owned HTTP profiles live in
 `/Library/Application Support/OpenScope/http_profiles.yaml`. For brokered SSH
 integrations, named targets live in
 `/Library/Application Support/OpenScope/ssh_targets.yaml`.
+
+The SSH verb set is **not fixed**. Seven curated actions ship with structured
+output (`check_host`, `host_metrics`, `service_status`, `tail_logs`,
+`read_file`, `list_dir`, `restart_service`), plus a `write_file` action — but
+any action can be defined by the app YAML. An action declares a remote command
+template whose `{param}` placeholders are substituted with shell-quoted
+parameter values (injection-safe), optionally piping a parameter to the
+command's stdin; a parameter may be bound to the target's allow-lists with
+`constraint: path` or `constraint: service`. Define your own verbs in a user app
+under `~/.openscope/apps.d/<app>.yaml` with `executor: ssh` (see the bundled
+`write_file` for the pattern). OpenScope brokers what the YAML declares and a
+root-applied policy allows — `openscope plan` surfaces every non-inspection verb
+as an `SSH-WRITE` finding to confirm before apply — rather than capping the verb
+set.
 
 For Mail, the default `openclaw` policy is read-only and constrained to the
 `Inbox` mailbox. No attachment access is provided in the bundled app, and you can

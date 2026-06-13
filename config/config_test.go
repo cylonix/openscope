@@ -119,3 +119,34 @@ func TestEnsureLayoutCreatesOverrideDirs(t *testing.T) {
 		}
 	}
 }
+
+func TestChooseSocketPath(t *testing.T) {
+	const sys = SystemSocketPath
+	user := "/home/u/.openscope/run/openscoped.sock"
+
+	// Explicit env override always wins.
+	if got := chooseSocketPath("/tmp/x.sock", user, true); got != "/tmp/x.sock" {
+		t.Errorf("env override: got %q", got)
+	}
+	// No env, a system socket present → use it (CLI finds a running root daemon).
+	if got := chooseSocketPath("", user, true); got != sys {
+		t.Errorf("system present: got %q, want %q", got, sys)
+	}
+	// No env, no system socket → per-user socket.
+	if got := chooseSocketPath("", user, false); got != user {
+		t.Errorf("fallback: got %q, want %q", got, user)
+	}
+}
+
+func TestAuditFilePath(t *testing.T) {
+	const admin = "/Library/Application Support/OpenScope"
+	cfg := "/home/u/.openscope"
+	// Root-daemon deployment → root-owned audit in the admin dir.
+	if got := auditFilePath(true, admin, cfg); got != admin+"/audit.jsonl" {
+		t.Errorf("system mode: got %q", got)
+	}
+	// Per-user deployment → audit in the user config dir (the non-root daemon appends).
+	if got := auditFilePath(false, admin, cfg); got != cfg+"/audit.jsonl" {
+		t.Errorf("per-user: got %q", got)
+	}
+}

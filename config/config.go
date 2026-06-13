@@ -12,6 +12,50 @@ import (
 
 const DirName = ".openscope"
 
+// SystemSocketPath is where a root LaunchDaemon (the macOS privileged-helper
+// model) binds its CLI socket — a system location its plist points
+// OPENSCOPE_SOCKET at. A non-root, per-user daemon uses <ConfigDir>/run instead.
+const SystemSocketPath = "/var/run/openscope/openscoped.sock"
+
+// chooseSocketPath resolves the socket both the CLI and daemon use: an explicit
+// env override wins (the root daemon's plist sets it); else a present system
+// socket (so a user shell finds a running root daemon without any env); else
+// the per-user socket.
+func chooseSocketPath(envSocket, userSocket string, systemExists bool) string {
+	switch {
+	case envSocket != "":
+		return envSocket
+	case systemExists:
+		return SystemSocketPath
+	default:
+		return userSocket
+	}
+}
+
+// LaunchDaemonPlistPath is the root LaunchDaemon's plist. Its presence is the
+// single deployment-level signal that the root-daemon (privileged-helper) model
+// is installed — read identically by the daemon, the CLI, and `apply` so they
+// agree on the audit/config layout regardless of which uid each runs as. (A
+// per-process euid check can't: `apply` runs root via sudo while the legacy
+// daemon runs non-root, which would split-brain the audit log.)
+const LaunchDaemonPlistPath = "/Library/LaunchDaemons/com.ezblock.openscope.openscoped.plist"
+
+// SystemMode reports whether the root-daemon deployment is installed.
+func SystemMode() bool {
+	_, err := os.Stat(LaunchDaemonPlistPath)
+	return err == nil
+}
+
+// auditFilePath puts the audit log root-owned in the admin dir under the
+// root-daemon deployment (the agent can read but not truncate it), and in the
+// per-user config dir otherwise (where the non-root daemon must append to it).
+func auditFilePath(systemMode bool, adminDir, configDir string) string {
+	if systemMode {
+		return filepath.Join(adminDir, "audit.jsonl")
+	}
+	return filepath.Join(configDir, "audit.jsonl")
+}
+
 type Paths struct {
 	HomeDir              string
 	ConfigDir            string
@@ -21,7 +65,11 @@ type Paths struct {
 	PoliciesFile         string
 	AgentsFile           string
 	AuditFile            string
-	EnabledAppsFile      string
+	// LegacyPoliciesFile is the pre-migration location (<ConfigDir>/policies.yaml).
+	// Policy now lives root-owned in AdminDir; this is a read-only fallback so an
+	// install upgraded before its next `sudo apply` keeps enforcing its policy.
+	LegacyPoliciesFile string
+	EnabledAppsFile    string
 	SocketPath           string
 	HTTPListenAddr       string
 	HTTPURL              string
@@ -75,7 +123,8 @@ func DefaultPaths() (Paths, error) {
 		AppsDir:              filepath.Join(configDir, "apps.d"),
 		RunDir:               filepath.Join(configDir, "run"),
 		StateDir:             filepath.Join(configDir, "state"),
-		PoliciesFile:         filepath.Join(configDir, "policies.yaml"),
+		PoliciesFile:         filepath.Join(adminDir, "policies.yaml"),
+		LegacyPoliciesFile:   filepath.Join(configDir, "policies.yaml"),
 		AgentsFile:           filepath.Join(configDir, "agents.yaml"),
 		AuditFile:            filepath.Join(configDir, "audit.jsonl"),
 		EnabledAppsFile:      filepath.Join(configDir, "state", "enabled_apps.yaml"),
@@ -90,9 +139,13 @@ func DefaultPaths() (Paths, error) {
 		SystemCommandsFile:   filepath.Join(adminDir, "system_commands.yaml"),
 	}
 
-	if override := os.Getenv("OPENSCOPE_SOCKET"); override != "" {
-		paths.SocketPath = override
-	}
+	// Socket resolution: an explicit OPENSCOPE_SOCKET wins (the root LaunchDaemon
+	// sets it to the system socket). Otherwise the CLI prefers a system socket if
+	// one exists — so a user shell finds a root daemon's socket without needing
+	// the env — and falls back to the per-user socket.
+	_, sysSockErr := os.Stat(SystemSocketPath)
+	paths.SocketPath = chooseSocketPath(os.Getenv("OPENSCOPE_SOCKET"), paths.SocketPath, sysSockErr == nil)
+	paths.AuditFile = auditFilePath(SystemMode(), adminDir, configDir)
 
 	paths.HTTPTLSCertFile = os.Getenv("OPENSCOPE_HTTP_TLS_CERT")
 	paths.HTTPTLSKeyFile = os.Getenv("OPENSCOPE_HTTP_TLS_KEY")
@@ -127,7 +180,16 @@ func resolveConfigHomeDir() (string, error) {
 			}
 		}
 	}
-	return os.UserHomeDir()
+	if home, err := os.UserHomeDir(); err == nil {
+		return home, nil
+	}
+	// $HOME is unset — a system LaunchDaemon runs with a minimal environment.
+	// Fall back to the running user's passwd home (root → /var/root) so the
+	// daemon can start; a root daemon overrides ConfigDir via OPENSCOPE_CONFIG_DIR.
+	if account, err := user.Current(); err == nil && account.HomeDir != "" {
+		return account.HomeDir, nil
+	}
+	return "", fmt.Errorf("cannot determine home directory ($HOME unset)")
 }
 
 func EnsureLayout(paths Paths) error {

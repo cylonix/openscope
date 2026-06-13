@@ -23,12 +23,16 @@ The vendor control plane lives in the **private** sibling repo `../openscope-ent
 
 The Xcode project in `macos/OpenScopeApp/` builds the signed macOS app bundle. Its Run Script phase calls `go build` for `openscope` and `openscoped`, and `swiftc` for `asapple`, placing all binaries into `Contents/Resources/bin/`. Build the bundle via Xcode or trigger the phase indirectly — do not manually copy binaries into a bundle.
 
-To package for distribution (two steps):
+To build, sign, notarize, and package in one command (requires `.env.local` with
+`AGENTSCOPE_TEAM_ID` + `NOTARIZE_PROFILE` — see `.env.local.example`):
 ```bash
-# Step 1: Xcode → Product → Archive → Distribute App → Developer ID → Export to dist/export/
-# Step 2:
-scripts/build_pkg.sh --version 0.1.0   # produces dist/OpenScope-0.1.0.pkg
+scripts/build_release.sh --version 0.1.0            # archive → export → notarize → pkg → notarize → verify
+scripts/build_release.sh --version 0.1.0 --install  # also installs the pkg and runs `openscope doctor`
+scripts/build_release.sh --version 0.1.0 --skip-notarize   # fast local build (Gatekeeper will reject it elsewhere)
 ```
+`build_release.sh` drives `xcodebuild archive` + `-exportArchive` (no manual Xcode
+Organizer steps), then calls `build_pkg.sh`. To re-package an already-exported app
+without re-archiving: `scripts/build_pkg.sh --version 0.1.0`.
 
 ## Architecture
 
@@ -91,14 +95,22 @@ Implement `executor.Runner`, register it by name in `daemon/executors_darwin.go`
 ## Runtime Files
 
 ```
-~/.openscope/
+~/.openscope/              # user-owned
   agents.yaml            # registered agent IDs
-  policies.yaml          # allow/deny rules
   audit.jsonl            # append-only decision log
   apps.d/                # user app definitions
   state/enabled_apps.yaml
   run/openscoped.sock       # Unix domain socket
+
+<AdminDir>/                # root-owned (/Library/Application Support/OpenScope on
+  policies.yaml          #   macOS, /etc/openscope elsewhere); written only via
+  ssh_targets.yaml       #   `sudo openscope apply`/`policy`, so a same-uid agent
+  system_commands.yaml   #   cannot edit the rules that confine it.
+  bounds.yaml
+  applied_state.yaml
 ```
+
+`policies.yaml` moved from `~/.openscope/` to the root-owned `AdminDir`; the daemon reads it (world-readable) but only root can write it. An install upgraded before its next `sudo openscope apply` keeps reading the legacy `~/.openscope/policies.yaml` (read-only fallback in `policy.LoadDefault`); `apply` migrates it and removes the legacy copy.
 
 ## Tests
 

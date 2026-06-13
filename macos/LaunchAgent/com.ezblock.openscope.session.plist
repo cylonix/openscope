@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Session LaunchAgent (phase 4): runs `openscoped --session-helper` as the
+  console user in the GUI (Aqua) session. It holds the per-user Notes/Mail
+  Automation (TCC) grant and runs asapple on behalf of the root daemon, which
+  forwards Apple-event actions to it over OPENSCOPE_SESSION_SOCKET. It serves
+  only that handoff — no policy, no CLI socket, no other executors — on a
+  root-only (mode 0000) socket. The postinstall installs this to the console
+  user's ~/Library/LaunchAgents and substitutes __SESSION_SOCKET__.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ezblock.openscope.session</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/OpenScope.app/Contents/Resources/bin/openscoped</string>
+		<string>--session-helper</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/com.ezblock.openscope.session.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/com.ezblock.openscope.session.stderr.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>OPENSCOPE_SESSION_SOCKET</key>
+		<string>__SESSION_SOCKET__</string>
+		<key>TMPDIR</key>
+		<string>/private/tmp</string>
+	</dict>
+</dict>
+</plist>

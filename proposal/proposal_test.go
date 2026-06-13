@@ -5,6 +5,7 @@ package proposal
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -132,12 +133,84 @@ policy:
   add:
     - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
 `
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds())
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds(), "")
 	if !hasFinding(findings, "SSH-ROOT-USER") {
 		t.Error("expected SSH-ROOT-USER")
 	}
-	if !hasFinding(findings, "SSH-KEY-EXPOSED") {
-		t.Error("expected SSH-KEY-EXPOSED")
+	// Default bounds require an explicit root-owned identity_file, so a target
+	// with none (ssh would fall back to agent-readable ~/.ssh) blocks.
+	if !hasFinding(findings, "SSH-KEY-READABLE") {
+		t.Error("expected SSH-KEY-READABLE for a target with no identity_file")
+	}
+}
+
+func TestLintKeyReadableBlocks(t *testing.T) {
+	// An identity_file the agent's user can read (mode 0644) lets the agent ssh
+	// directly with that key, bypassing every policy rule — must hard-fail apply.
+	dir := t.TempDir()
+	key := filepath.Join(dir, "prod_key")
+	if err := os.WriteFile(key, []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: ` + key + `, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	b := DefaultBounds()
+	p := parse(t, src)
+	if !hasFinding(Analyze(p, LiveState{}, minimalDefs(), b, "/nonexistent-home"), "SSH-KEY-READABLE") {
+		t.Fatal("expected SSH-KEY-READABLE for an agent-readable identity file")
+	}
+	if !b.blocks("SSH-KEY-READABLE") {
+		t.Error("default bounds should block SSH-KEY-READABLE")
+	}
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), b, "default", MachineInfo{HomeDir: "/nonexistent-home"})
+	if !plan.Blocked {
+		t.Error("a proposal with an agent-readable ssh key should be blocked")
+	}
+}
+
+func TestLintRequireIdentityFile(t *testing.T) {
+	// No identity_file means ssh falls back to ~/.ssh (agent-readable). It is
+	// advisory by default, but blocks once bounds.require_identity_file is set.
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+
+	// Default (require_identity_file: true): a missing key blocks.
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), DefaultBounds(), "x", MachineInfo{})
+	if !hasFinding(plan.Findings, "SSH-KEY-READABLE") {
+		t.Fatalf("default bounds should escalate a missing identity_file to SSH-KEY-READABLE, got %v", plan.Findings)
+	}
+	if !plan.Blocked {
+		t.Error("a missing identity_file should block apply under default bounds")
+	}
+
+	// Personal opt-out (require_identity_file: false): advisory only.
+	relaxed := DefaultBounds()
+	relaxed.SSH.RequireIdentityFile = false
+	def := Analyze(p, LiveState{}, minimalDefs(), relaxed, "")
+	if !hasFinding(def, "SSH-KEY-EXPOSED") {
+		t.Error("expected advisory SSH-KEY-EXPOSED when the opt-out is set")
+	}
+	if hasFinding(def, "SSH-KEY-READABLE") {
+		t.Error("opt-out should not block a missing identity_file")
 	}
 }
 
@@ -154,7 +227,7 @@ policy:
     - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
 `
 	b := DefaultBounds()
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), b)
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), b, "")
 	if !hasFinding(findings, "SSH-SECRET-PATH") {
 		t.Fatal("expected SSH-SECRET-PATH (/etc/nginx reaches /etc/nginx/ssl)")
 	}
@@ -178,7 +251,7 @@ policy:
   add:
     - {effect: allow, agent: bot, app: system, action: manage_apps}
 `
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds())
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds(), "")
 	if !hasFinding(findings, "SYS-APP-CODEEXEC") {
 		t.Error("expected SYS-APP-CODEEXEC for writable /tmp source")
 	}
@@ -197,7 +270,7 @@ policy:
   add:
     - {effect: allow, agent: bot, app: ssh, action: restart_service, constraints: {target: web}}
 `
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds())
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds(), "")
 	if !hasFinding(findings, "POLICY-DEAD-RULE") {
 		t.Error("expected POLICY-DEAD-RULE for service action on service-less target")
 	}
@@ -398,7 +471,7 @@ policy:
   add:
     - {effect: allow, agent: bot, app: ssh, action: restart_service}
 `
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds())
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds(), "")
 	if !hasFinding(findings, "POLICY-DEAD-RULE") {
 		t.Error("expected POLICY-DEAD-RULE for wildcard service action with no service-bearing target")
 	}
@@ -413,7 +486,7 @@ policy:
   add:
     - {effect: deny, agent: bot, app: postgress, action: query}
 `
-	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds())
+	findings := Analyze(parse(t, src), LiveState{}, minimalDefs(), DefaultBounds(), "")
 	var found *Finding
 	for i := range findings {
 		if findings[i].RuleID == "POLICY-DEAD-RULE" {
@@ -451,5 +524,195 @@ func TestDefaultBoundsParses(t *testing.T) {
 	}
 	if !b.blocks("SYS-APP-CODEEXEC") || !b.blocks("SSH-SECRET-PATH") {
 		t.Error("default bounds should block code-exec and secret-path")
+	}
+}
+
+func TestLintWriteActionFlaggedButNotBlocked(t *testing.T) {
+	// A non-inspection ssh verb (write_file) must surface in review as SSH-WRITE,
+	// but per "broker, not limiter" it is acknowledge-by-default, not blocking.
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: /var/openscope/ssh/prod, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: write_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+	b := DefaultBounds()
+	findings := Analyze(p, LiveState{}, minimalDefs(), b, "/nonexistent-home")
+	if !hasFinding(findings, "SSH-WRITE") {
+		t.Fatal("expected SSH-WRITE for a non-inspection ssh action")
+	}
+	if b.blocks("SSH-WRITE") {
+		t.Error("SSH-WRITE must not block by default (broker, not limiter)")
+	}
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), b, "d", MachineInfo{HomeDir: "/nonexistent-home"})
+	if plan.Blocked {
+		t.Error("a write action alone should not block apply")
+	}
+	if len(plan.Acknowledge) == 0 {
+		t.Error("SSH-WRITE (HIGH) should require typed acknowledgment at apply")
+	}
+}
+
+func TestLintReadOnlyActionNotFlaggedAsWrite(t *testing.T) {
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: /var/openscope/ssh/prod, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+	if hasFinding(Analyze(p, LiveState{}, minimalDefs(), DefaultBounds(), "/nonexistent-home"), "SSH-WRITE") {
+		t.Fatal("read_file is inspection — must not be flagged SSH-WRITE")
+	}
+}
+
+func TestLintParallelPathWhenUserKeysPresent(t *testing.T) {
+	// A proposal that adds an ssh target, evaluated with a home dir that has a
+	// readable ~/.ssh key, must surface SSH-PARALLEL-PATH (MEDIUM, not blocking).
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"id_ed25519", "id_ed25519.pub"} {
+		if err := os.WriteFile(filepath.Join(sshDir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: /var/openscope/ssh/prod, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+	b := DefaultBounds()
+	if !hasFinding(Analyze(p, LiveState{}, minimalDefs(), b, home), "SSH-PARALLEL-PATH") {
+		t.Fatal("expected SSH-PARALLEL-PATH when ~/.ssh has keys and a target is added")
+	}
+	// Deterministic local signal — must not block apply (the live probe does that).
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), b, "d", MachineInfo{HomeDir: home})
+	if plan.Blocked {
+		t.Error("SSH-PARALLEL-PATH must not block plan (apply/check-bypass verify live)")
+	}
+}
+
+func TestLintNoParallelPathFindingWithoutUserKeys(t *testing.T) {
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: /var/openscope/ssh/prod, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+	// home with no ~/.ssh → no parallel path possible
+	if hasFinding(Analyze(p, LiveState{}, minimalDefs(), DefaultBounds(), t.TempDir()), "SSH-PARALLEL-PATH") {
+		t.Fatal("no ~/.ssh keys → SSH-PARALLEL-PATH must not fire")
+	}
+}
+
+func TestLintPkgInstallStrongVsWeak(t *testing.T) {
+	b := DefaultBounds()
+
+	// Strong scope (a signing team ID) → SYS-PKG-INSTALL, acknowledge not block.
+	strong := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+system_commands:
+  pkg:
+    allowed_team_ids: {add: [P7Y2NJ7JP3]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: install_pkg}
+`
+	p := parse(t, strong)
+	fs := Analyze(p, LiveState{}, minimalDefs(), b, "")
+	if !hasFinding(fs, "SYS-PKG-INSTALL") {
+		t.Fatal("expected SYS-PKG-INSTALL for a team-id-scoped install_pkg")
+	}
+	if hasFinding(fs, "SYS-PKG-CODEEXEC") {
+		t.Fatal("team-id-scoped install_pkg must not be flagged SYS-PKG-CODEEXEC")
+	}
+	if BuildPlan(p, LiveState{}, minimalDefs(), b, "d", MachineInfo{}).Blocked {
+		t.Error("a well-scoped install_pkg should not block")
+	}
+
+	// Weak scope (only an agent-writable prefix) → SYS-PKG-CODEEXEC, blocking.
+	wdir := t.TempDir() // user-owned + writable
+	weak := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+system_commands:
+  pkg:
+    allowed_prefixes: {add: [` + wdir + `]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: install_pkg}
+`
+	pw := parse(t, weak)
+	if !hasFinding(Analyze(pw, LiveState{}, minimalDefs(), b, ""), "SYS-PKG-CODEEXEC") {
+		t.Fatal("expected SYS-PKG-CODEEXEC for a writable-prefix-only install_pkg")
+	}
+	if !BuildPlan(pw, LiveState{}, minimalDefs(), b, "d", MachineInfo{}).Blocked {
+		t.Error("a weakly-scoped install_pkg must block apply")
+	}
+}
+
+func TestEffectiveSystemHonorsRemove(t *testing.T) {
+	// A proposal's `remove:` on a system_commands list must drop live entries
+	// (previously silently ignored), so scope migrations don't need a manual reset.
+	live := admin.SystemCommands{}
+	live.Pkg.AllowedPrefixes = []string{"/Volumes/ext/dist", "/private/tmp"}
+	live.Ports.Allowed = []int{8080, 9090}
+
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+system_commands:
+  pkg:
+    allowed_prefixes:
+      add: [/var/openscope/pkgs]
+      remove: [/Volumes/ext/dist]
+  ports:
+    allowed:
+      remove: [8080]
+`
+	eff := parse(t, src).EffectiveSystem(live)
+
+	if contains(eff.Pkg.AllowedPrefixes, "/Volumes/ext/dist") {
+		t.Error("remove should drop /Volumes/ext/dist")
+	}
+	if !contains(eff.Pkg.AllowedPrefixes, "/private/tmp") || !contains(eff.Pkg.AllowedPrefixes, "/var/openscope/pkgs") {
+		t.Errorf("kept + added prefixes should remain, got %v", eff.Pkg.AllowedPrefixes)
+	}
+	if containsInt(eff.Ports.Allowed, 8080) {
+		t.Error("remove should drop port 8080")
+	}
+	if !containsInt(eff.Ports.Allowed, 9090) {
+		t.Error("port 9090 should remain")
 	}
 }

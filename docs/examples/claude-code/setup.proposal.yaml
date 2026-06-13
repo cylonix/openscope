@@ -23,28 +23,40 @@ metadata:
   created_at: 2026-06-10T20:00:00Z
 
 # --- Remote targets (admin.SSHTarget) ----------------------------------------
+# identity_file points at a ROOT-OWNED key (mode 0600, owned by root, outside
+# ~/.ssh). This is mandatory under bounds.require_identity_file: without it, ssh
+# falls back to the agent-readable ~/.ssh and the agent could ssh directly,
+# bypassing every policy rule (SSH-KEY-READABLE, blocking). Provision the keys
+# once as root: `sudo install -d -m 700 /var/openscope/ssh` then drop each
+# private key there 0600 root:wheel.
 ssh_targets:
   add:
     - alias: kidfence-prod
       host: api.kidfence.ai
       user: root
+      identity_file: /var/openscope/ssh/kidfence-prod
       allowed_services: [nginx]
       allowed_paths: ["/opt/kidfence/compose.yml"]
       allowed_path_prefixes:
         - /opt/kidfence/db/logs
         - /var/lib/kidfence/logs
         - /var/log
-        - /etc/nginx
+        # Narrowed from /etc/nginx, which reaches the TLS private keys under
+        # /etc/nginx/ssl (SSH-SECRET-PATH, blocking). conf.d holds site config
+        # the agent actually reads, not secrets.
+        - /etc/nginx/conf.d
         - /var/www/kidfence.ai
     - alias: kidfence-www
       host: kidfence.ai
       user: root
+      identity_file: /var/openscope/ssh/kidfence-www
       allowed_path_prefixes:
         - /var/www/kidfence.ai
         - /var/log/nginx
     - alias: openscope-demo
       host: demo.openscopeai.com
       user: root
+      identity_file: /var/openscope/ssh/openscope-demo
       allowed_services: [openscoped, nginx, fail2ban]
       allowed_path_prefixes:
         - /opt/openscope-demo
@@ -53,6 +65,7 @@ ssh_targets:
     - alias: trusted-ds
       host: openscopeai.org
       user: root
+      identity_file: /var/openscope/ssh/trusted-ds
       allowed_services: [trusted-ds-grid, trusted-ds-bank]
       allowed_path_prefixes:
         - /var/log
@@ -81,7 +94,13 @@ system_commands:
     allowed_chmod_prefixes: {add: [/Volumes/2TB-1/src, /tmp]}
     allowed_chown_prefixes: {add: [/tmp]}
   apps:
-    allowed_source_prefixes: {add: [/Users/randy/Library/Developer/Xcode/DerivedData, /Volumes/2TB-1/src, /tmp]}
+    # manage_apps installs+launches into /Applications. If the source dir is
+    # agent-writable, the agent can drop any binary there and have it launched —
+    # arbitrary code execution as your user (SYS-APP-CODEEXEC, blocking). So the
+    # source must be a ROOT-OWNED staging dir: build in DerivedData as usual,
+    # then a privileged step stages the signed .app into /var/openscope/staged-apps
+    # (root:wheel) before `manage_apps install` will read it.
+    allowed_source_prefixes: {add: [/var/openscope/staged-apps]}
     allowed_install_dirs:    {add: [/Applications]}
     allowed_names:           {add: [Kidfence, OpenScope]}
   builds:

@@ -10,8 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/appdef"
@@ -85,11 +87,136 @@ func (e Executor) runAction(cmds admin.SystemCommands, actionName string, params
 		return e.manageFiles(cmds, params)
 	case "manage_apps":
 		return e.manageApps(cmds, params)
+	case "install_pkg":
+		return e.installPkg(cmds, params)
 	case "build":
 		return e.build(cmds, params)
 	default:
 		return nil, fmt.Errorf("unsupported system action %q", actionName)
 	}
+}
+
+var teamIDPattern = regexp.MustCompile(`Developer ID Installer:.*\(([A-Z0-9]{10})\)`)
+
+// Overridable for tests so they need neither a real pkgutil nor a real install.
+var (
+	pkgTeamIDOf     = realPkgTeamID
+	launchInstaller = realLaunchInstaller
+)
+
+// installPkg installs a macOS .pkg as root. A pkg's pre/postinstall scripts run
+// as root, so this is a powerful primitive; access is fail-closed across three
+// composable gates (all configured ones must pass; at least one must be set):
+// an allowed path prefix, a root-owned requirement (so the agent can't place or
+// swap the pkg), and an allowed signing team ID (an agent can't forge it). The
+// installer is launched DETACHED because installing OpenScope's own pkg boots
+// the daemon out mid-run; the result is therefore async (confirm afterward).
+func (e Executor) installPkg(cmds admin.SystemCommands, params map[string]string) (map[string]any, error) {
+	pkg := strings.TrimSpace(params["pkg"])
+	if pkg == "" {
+		return nil, fmt.Errorf("pkg is required")
+	}
+	if err := validatePath(pkg); err != nil {
+		return nil, err
+	}
+	pkg = filepath.Clean(pkg)
+	if !strings.HasSuffix(pkg, ".pkg") {
+		return nil, fmt.Errorf("install_pkg requires a .pkg path, got %q", pkg)
+	}
+	if geteuid() != 0 {
+		return nil, fmt.Errorf("install_pkg needs a root broker — openscoped must run as root (see docs/macos-privileged-helper.md)")
+	}
+	if !admin.PkgScopeConfigured(cmds) {
+		return nil, fmt.Errorf("install_pkg refused: no pkg scope configured — set at least one of pkg.allowed_team_ids, pkg.require_root_owned, or pkg.allowed_prefixes")
+	}
+
+	// Gate 1 — path prefix.
+	if len(cmds.Pkg.AllowedPrefixes) > 0 && !admin.AllowsPkgPrefix(cmds, pkg) {
+		return nil, fmt.Errorf("install_pkg refused: %q is not under an allowed prefix", pkg)
+	}
+	// Gate 2 — root-owned pkg + containing dir (the agent can't place or swap it).
+	if cmds.Pkg.RequireRootOwned {
+		if err := requireRootOwnedFile(pkg); err != nil {
+			return nil, fmt.Errorf("install_pkg refused: %w", err)
+		}
+		if err := requireRootOwnedFile(filepath.Dir(pkg)); err != nil {
+			return nil, fmt.Errorf("install_pkg refused: containing dir %w", err)
+		}
+	}
+	// Gate 3 — signing team ID (tamper-proof: an agent can't sign as our team).
+	if len(cmds.Pkg.AllowedTeamIDs) > 0 {
+		team, err := pkgTeamIDOf(pkg)
+		if err != nil {
+			return nil, fmt.Errorf("install_pkg refused: cannot verify pkg signature: %w", err)
+		}
+		if team == "" {
+			return nil, fmt.Errorf("install_pkg refused: %q is unsigned (no Developer ID Installer team) but pkg.allowed_team_ids is set", pkg)
+		}
+		if !slices.Contains(cmds.Pkg.AllowedTeamIDs, team) {
+			return nil, fmt.Errorf("install_pkg refused: pkg signing team %q is not in pkg.allowed_team_ids", team)
+		}
+	}
+
+	logPath := filepath.Join(os.TempDir(), "openscope-install.log")
+	if err := launchInstaller(pkg, logPath); err != nil {
+		return nil, fmt.Errorf("launch installer: %w", err)
+	}
+	return map[string]any{
+		"op":     "install_pkg",
+		"pkg":    pkg,
+		"status": "installer launched detached; the daemon will restart — confirm with `openscope version`",
+		"log":    logPath,
+	}, nil
+}
+
+// requireRootOwnedFile fails unless path exists, is root-owned, and is not
+// group/world-writable.
+func requireRootOwnedFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%q: %w", path, err)
+	}
+	if perm := info.Mode().Perm(); perm&0o022 != 0 {
+		return fmt.Errorf("%q is group/world-writable (mode %04o)", path, perm)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+		return fmt.Errorf("%q is owned by uid %d, not root", path, st.Uid)
+	}
+	return nil
+}
+
+// realPkgTeamID extracts the Developer ID Installer team from a pkg's signature
+// via pkgutil. Returns "" (no error) for an unsigned pkg; an error only when
+// pkgutil itself can't run.
+func realPkgTeamID(pkg string) (string, error) {
+	out, err := exec.Command("/usr/sbin/pkgutil", "--check-signature", pkg).CombinedOutput()
+	if m := teamIDPattern.FindStringSubmatch(string(out)); m != nil {
+		return m[1], nil
+	}
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", nil // unsigned / not Developer-ID — non-zero exit, no team id
+		}
+		return "", err // pkgutil missing or otherwise unrunnable
+	}
+	return "", nil
+}
+
+// realLaunchInstaller starts `installer -pkg <p> -target /` in a NEW SESSION so
+// it survives the daemon being booted out by the pkg's own preinstall. Output
+// goes to logPath. It does not wait — the install proceeds independently.
+func realLaunchInstaller(pkg, logPath string) error {
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("/usr/sbin/installer", "-pkg", pkg, "-target", "/")
+	cmd.Stdout = logf
+	cmd.Stderr = logf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	err = cmd.Start()
+	logf.Close() // the child inherited its own dup of the fd
+	return err
 }
 
 func (e Executor) managePackages(cmds admin.SystemCommands, params map[string]string) (map[string]any, error) {
@@ -766,23 +893,51 @@ func validatePath(path string) error {
 	return nil
 }
 
+// geteuid is overridable in tests; the daemon's effective uid decides how a
+// privileged command escalates.
+var geteuid = os.Geteuid
+
+// allowSudoEscalation reports whether a non-root daemon may escalate privileged
+// commands via NOPASSWD sudo. It is opt-in because on a same-uid install the
+// agent shares the daemon's sudo grant and could run the command directly — the
+// broker bypass. It is safe only when the daemon runs as a dedicated user
+// distinct from the agent.
+func allowSudoEscalation() bool {
+	switch os.Getenv("OPENSCOPE_ALLOW_SUDO_ESCALATION") {
+	case "1", "true", "TRUE", "yes", "on":
+		return true
+	}
+	return false
+}
+
 func (e Executor) run(sudo bool, binary string, args ...string) (string, error) {
 	runner := e.Runner
 	if runner == nil {
 		runner = execRunner{}
 	}
 
-	var name string
-	var fullArgs []string
+	name := binary
+	fullArgs := args
 	if sudo {
+		// A privileged command. Reject a user-writable binary regardless of how it
+		// runs — root executing a tampered binary is privilege escalation, just as
+		// a NOPASSWD sudo wildcard would be.
 		if err := admin.RequireSudoSafe(binary); err != nil {
-			return "", fmt.Errorf("refusing sudo execution: %w", err)
+			return "", fmt.Errorf("refusing privileged execution: %w", err)
 		}
-		name = "/usr/bin/sudo"
-		fullArgs = append([]string{"-n", binary}, args...)
-	} else {
-		name = binary
-		fullArgs = args
+		switch {
+		case geteuid() == 0:
+			// Root daemon / privileged helper: run directly. No sudo wrapper means
+			// no NOPASSWD sudoers wildcard a same-uid agent could abuse.
+		case allowSudoEscalation():
+			name = "/usr/bin/sudo"
+			fullArgs = append([]string{"-n", binary}, args...)
+		default:
+			return "", fmt.Errorf(
+				"privileged command %q needs a root broker: run openscoped as root, or set "+
+					"OPENSCOPE_ALLOW_SUDO_ESCALATION=1 only when the daemon's user differs from "+
+					"the agent's (see docs/macos-privileged-helper.md)", binary)
+		}
 	}
 
 	result, err := runner.Run(name, fullArgs)
@@ -797,7 +952,7 @@ func (e Executor) run(sudo bool, binary string, args ...string) (string, error) 
 		if message == "" {
 			message = fmt.Sprintf("command failed with exit code %d", result.ExitCode)
 		}
-		if sudo && strings.Contains(message, "sudo") {
+		if name == "/usr/bin/sudo" && strings.Contains(message, "sudo") {
 			message += "; run 'openscope system sudoers' to see required sudoers entries"
 		}
 		return "", fmt.Errorf("%s", message)

@@ -361,11 +361,12 @@ The exact mechanism can be finalized during implementation, but it must not allo
 
 ### Policy Storage
 
-Initial storage:
+Root-owned in the admin dir (`/Library/Application Support/OpenScope` on macOS,
+`/etc/openscope` elsewhere), written only via `sudo openscope apply`/`policy`:
 
-- `~/.openscope/policies.yaml`
+- `<AdminDir>/policies.yaml` (legacy `~/.openscope/policies.yaml` is a read-only fallback until the next `apply`)
 
-Audit log:
+Audit log (user-owned for now; becomes root-owned with the privileged daemon — see `macos-privileged-helper.md`):
 
 - `~/.openscope/audit.jsonl`
 

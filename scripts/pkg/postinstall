@@ -2,94 +2,85 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# postinstall — runs as root after OpenScope.app is copied to /Applications
-# Sets up per-user LaunchAgent and CLI symlink for the current console user.
+# postinstall — runs as root after OpenScope.app is copied to /Applications.
+#
+# Phase-4 two-daemon model:
+#   - Root LaunchDaemon (/Library/LaunchDaemons): openscoped as root — policy,
+#     audit, keys, ssh, system, the CLI socket.
+#   - Session LaunchAgent (console user's ~/Library/LaunchAgents): openscoped
+#     --session-helper — holds Notes/Mail TCC, runs asapple for the root daemon.
+# Policy is root-owned in the admin dir; the agent can read but not edit it.
 
 set -euo pipefail
 
 APP="/Applications/OpenScope.app"
-PLIST_NAME="com.ezblock.openscope.openscoped.plist"
-PLIST_SRC="$APP/Contents/Resources/launchd/$PLIST_NAME"
-CLI_SRC="$APP/Contents/Resources/bin/openscope"
+BIN_DIR="$APP/Contents/Resources/bin"
+LAUNCHD_SRC="$APP/Contents/Resources/launchd"
+DAEMON_PLIST="com.ezblock.openscope.openscoped.plist"
+SESSION_PLIST="com.ezblock.openscope.session.plist"
+DAEMON_LABEL="com.ezblock.openscope.openscoped"
+SESSION_LABEL="com.ezblock.openscope.session"
+
+CLI_SRC="$BIN_DIR/openscope"
 CLI_LINK="/usr/local/bin/openscope"
 PILOT_SRC_DIR="/usr/local/lib/openscope/pilot"
 PILOT_LINK="/usr/local/bin/openscope-diag"
 
-# ── Find the console user ────────────────────────────────────────────────────
-# PKG postinstall runs as root. We need the human user who is logged in.
+ADMIN_DIR="/Library/Application Support/OpenScope"
+SYSTEM_RUN_DIR="/var/run/openscope"
+
+# ── Console user (the human logged in; postinstall itself runs as root) ───────
 CONSOLE_USER=$( scutil <<< "show State:/Users/ConsoleUser" \
   | awk '/Name :/ && !/loginwindow/ { print $3; exit }' )
-
 if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
   echo "postinstall: no console user detected, skipping per-user setup" >&2
   exit 0
 fi
-
 CONSOLE_UID=$(id -u "$CONSOLE_USER")
 USER_HOME=$(eval echo "~$CONSOLE_USER")
 LAUNCH_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
-PLIST_DST="$LAUNCH_AGENTS_DIR/$PLIST_NAME"
 CONFIG_DIR="$USER_HOME/.openscope"
-ADMIN_DIR="/Library/Application Support/OpenScope"
-PROTECTED_FOLDERS_FILE="$ADMIN_DIR/protected_folders.yaml"
-MAIL_FILTERS_FILE="$ADMIN_DIR/mail_filters.yaml"
 
-echo "postinstall: setting up OpenScope for user $CONSOLE_USER (uid $CONSOLE_UID)"
+# The session socket lives in the console user's home (the session agent runs as
+# that user and binds it; the root daemon connects down to it). Templated into
+# both plists below.
+SESSION_RUN_DIR="$USER_HOME/Library/Application Support/OpenScope/run"
+SESSION_SOCKET="$SESSION_RUN_DIR/session.sock"
 
-# ── CLI symlink ──────────────────────────────────────────────────────────────
+echo "postinstall: setting up OpenScope (two-daemon) for $CONSOLE_USER (uid $CONSOLE_UID)"
+
+# ── CLI symlinks ──────────────────────────────────────────────────────────────
 mkdir -p /usr/local/bin
-if [ -L "$CLI_LINK" ] || [ -e "$CLI_LINK" ]; then
-  rm -f "$CLI_LINK"
-fi
-ln -s "$CLI_SRC" "$CLI_LINK"
-echo "postinstall: installed $CLI_LINK -> $CLI_SRC"
-
+ln -sf "$CLI_SRC" "$CLI_LINK"
+echo "postinstall: $CLI_LINK -> $CLI_SRC"
 if [ -f "$PILOT_SRC_DIR/pilot_test.sh" ]; then
-  if [ -L "$PILOT_LINK" ] || [ -e "$PILOT_LINK" ]; then
-    rm -f "$PILOT_LINK"
-  fi
-  ln -s "$PILOT_SRC_DIR/pilot_test.sh" "$PILOT_LINK"
-  echo "postinstall: installed $PILOT_LINK -> $PILOT_SRC_DIR/pilot_test.sh"
+  ln -sf "$PILOT_SRC_DIR/pilot_test.sh" "$PILOT_LINK"
 fi
 
-# ── LaunchAgent ──────────────────────────────────────────────────────────────
-mkdir -p "$LAUNCH_AGENTS_DIR"
-chown "$CONSOLE_USER" "$LAUNCH_AGENTS_DIR"
+# ── Root-owned directories ────────────────────────────────────────────────────
+mkdir -p "$ADMIN_DIR"
+chown root:wheel "$ADMIN_DIR"
+chmod 755 "$ADMIN_DIR"
 
-cp "$PLIST_SRC" "$PLIST_DST"
-chown "$CONSOLE_USER" "$PLIST_DST"
-echo "postinstall: installed LaunchAgent plist at $PLIST_DST"
+mkdir -p "$SYSTEM_RUN_DIR"          # root daemon's CLI socket dir
+chown root:wheel "$SYSTEM_RUN_DIR"
+chmod 755 "$SYSTEM_RUN_DIR"
 
-# Unload any previous version (ignore errors if not loaded)
-launchctl bootout "gui/$CONSOLE_UID/$( basename "$PLIST_NAME" .plist )" 2>/dev/null || true
-
-# Bootstrap and start the daemon
-launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST_DST"
-launchctl kickstart "gui/$CONSOLE_UID/$( basename "$PLIST_NAME" .plist )"
-echo "postinstall: LaunchAgent bootstrapped and started"
-
-# ── Seed default config (if first install) ──────────────────────────────────
-mkdir -p \
-  "$CONFIG_DIR" \
-  "$CONFIG_DIR/apps.d" \
-  "$CONFIG_DIR/state" \
-  "$CONFIG_DIR/run"
+# ── Per-user directories ──────────────────────────────────────────────────────
+mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/apps.d" "$CONFIG_DIR/state" "$CONFIG_DIR/run"
 chown -R "$CONSOLE_USER" "$CONFIG_DIR"
+mkdir -p "$SESSION_RUN_DIR"
+chown -R "$CONSOLE_USER" "$USER_HOME/Library/Application Support/OpenScope"
 
-AGENTS_FILE="$CONFIG_DIR/agents.yaml"
-if [ ! -f "$AGENTS_FILE" ]; then
-  cat > "$AGENTS_FILE" <<'EOF'
-version: 1
-agents:
-    - openclaw
-EOF
-  chown "$CONSOLE_USER" "$AGENTS_FILE"
-  echo "postinstall: created agents registry with openclaw agent at $AGENTS_FILE"
-fi
-
-POLICY_FILE="$CONFIG_DIR/policies.yaml"
-if [ ! -f "$POLICY_FILE" ]; then
-  cat > "$POLICY_FILE" <<'EOF'
+# ── Policy: root-owned in the admin dir (agent can read, not edit) ────────────
+ADMIN_POLICY="$ADMIN_DIR/policies.yaml"
+LEGACY_POLICY="$CONFIG_DIR/policies.yaml"
+if [ ! -f "$ADMIN_POLICY" ]; then
+  if [ -f "$LEGACY_POLICY" ]; then
+    mv "$LEGACY_POLICY" "$ADMIN_POLICY"
+    echo "postinstall: migrated existing policy to $ADMIN_POLICY"
+  else
+    cat > "$ADMIN_POLICY" <<'EOF'
 version: 1
 rules:
     - effect: allow
@@ -113,37 +104,60 @@ rules:
       constraints:
         mailbox: Inbox
 EOF
-  chown "$CONSOLE_USER" "$POLICY_FILE"
-  echo "postinstall: created default policy (openclaw can list/read notes but not list folders) at $POLICY_FILE"
+    echo "postinstall: seeded default policy at $ADMIN_POLICY"
+  fi
+fi
+chown root:wheel "$ADMIN_POLICY"
+chmod 644 "$ADMIN_POLICY"           # world-readable so the daemon reads it; root-writable only
+rm -f "$LEGACY_POLICY"              # no user-writable copy may linger
+
+# ── Agents registry (per-user; not an escalation vector without a policy rule) ─
+AGENTS_FILE="$CONFIG_DIR/agents.yaml"
+if [ ! -f "$AGENTS_FILE" ]; then
+  printf 'version: 1\nagents:\n    - openclaw\n' > "$AGENTS_FILE"
+  chown "$CONSOLE_USER" "$AGENTS_FILE"
 fi
 
-mkdir -p "$ADMIN_DIR"
+# ── Admin blacklists (root-owned) ─────────────────────────────────────────────
+PROTECTED_FOLDERS_FILE="$ADMIN_DIR/protected_folders.yaml"
 if [ ! -f "$PROTECTED_FOLDERS_FILE" ]; then
-  cat > "$PROTECTED_FOLDERS_FILE" <<'EOF'
-version: 1
-keywords:
-  - private
-  - hidden
-EOF
+  printf 'version: 1\nkeywords:\n  - private\n  - hidden\n' > "$PROTECTED_FOLDERS_FILE"
   chmod 644 "$PROTECTED_FOLDERS_FILE"
-  echo "postinstall: created protected folder blacklist at $PROTECTED_FOLDERS_FILE"
 fi
-
+MAIL_FILTERS_FILE="$ADMIN_DIR/mail_filters.yaml"
 if [ ! -f "$MAIL_FILTERS_FILE" ]; then
-  cat > "$MAIL_FILTERS_FILE" <<'EOF'
-version: 1
-allowed_sender_domains: []
-EOF
+  printf 'version: 1\nallowed_sender_domains: []\n' > "$MAIL_FILTERS_FILE"
   chmod 644 "$MAIL_FILTERS_FILE"
-  echo "postinstall: created mail filters config at $MAIL_FILTERS_FILE"
 fi
 
-# ── Open the app to trigger the macOS Notes Automation permission prompt ─────
-# openscoped runs as a background LaunchAgent and cannot show TCC prompts.
-# Opening OpenScope.app puts it in the foreground so macOS can display
-# the "OpenScope wants to control Notes" approval dialog.
+# ── Root LaunchDaemon ─────────────────────────────────────────────────────────
+DAEMON_DST="/Library/LaunchDaemons/$DAEMON_PLIST"
+sed -e "s|__SESSION_SOCKET__|$SESSION_SOCKET|g" \
+    -e "s|__CONFIG_DIR__|$CONFIG_DIR|g" \
+    "$LAUNCHD_SRC/$DAEMON_PLIST" > "$DAEMON_DST"
+chown root:wheel "$DAEMON_DST"
+chmod 644 "$DAEMON_DST"
+launchctl bootout "system/$DAEMON_LABEL" 2>/dev/null || true
+launchctl bootstrap system "$DAEMON_DST"
+launchctl kickstart -k "system/$DAEMON_LABEL"
+echo "postinstall: root LaunchDaemon bootstrapped"
+
+# ── Session LaunchAgent (console user, GUI session, holds TCC) ────────────────
+mkdir -p "$LAUNCH_AGENTS_DIR"
+chown "$CONSOLE_USER" "$LAUNCH_AGENTS_DIR"
+SESSION_DST="$LAUNCH_AGENTS_DIR/$SESSION_PLIST"
+sed "s|__SESSION_SOCKET__|$SESSION_SOCKET|g" "$LAUNCHD_SRC/$SESSION_PLIST" > "$SESSION_DST"
+chown "$CONSOLE_USER" "$SESSION_DST"
+# Retire the legacy per-user openscoped LaunchAgent (replaced by the root daemon).
+launchctl bootout "gui/$CONSOLE_UID/$DAEMON_LABEL" 2>/dev/null || true
+rm -f "$LAUNCH_AGENTS_DIR/$DAEMON_PLIST"
+launchctl bootout "gui/$CONSOLE_UID/$SESSION_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$CONSOLE_UID" "$SESSION_DST"
+launchctl kickstart -k "gui/$CONSOLE_UID/$SESSION_LABEL"
+echo "postinstall: session LaunchAgent bootstrapped"
+
+# ── Trigger the Notes Automation (TCC) prompt for the session agent ───────────
 launchctl asuser "$CONSOLE_UID" /usr/bin/open "$APP"
-echo "postinstall: opened OpenScope.app to trigger Notes permission prompt"
 
 echo "postinstall: done"
 exit 0

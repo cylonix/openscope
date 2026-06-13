@@ -89,12 +89,16 @@ if [ "$SKIP_ARCHIVE" = true ] && [ -d "$ARCHIVE_PATH" ]; then
   echo "==> Skipping archive (--skip-archive, using $ARCHIVE_PATH)"
 else
   echo "==> Archiving..."
-  xcodebuild archive \
+  # Pass the release version into the Run Script's go build (it stamps
+  # buildinfo.Version via -ldflags). Command-line build settings are exported
+  # into the script phase environment, where it falls back to `git describe`.
+  OPENSCOPE_VERSION="$VERSION" xcodebuild archive \
     -project "$XCODEPROJ" \
     -scheme "$SCHEME" \
     -configuration Release \
     -archivePath "$ARCHIVE_PATH" \
     DEVELOPMENT_TEAM="$TEAM_ID" \
+    OPENSCOPE_VERSION="$VERSION" \
     | tail -5
   echo "    archive: $ARCHIVE_PATH"
 fi
@@ -148,7 +152,14 @@ fi
 # ── Step 4: Build PKG ───────────────────────────────────────────────────────
 echo ""
 echo "==> Building installer package..."
-"$REPO_ROOT/scripts/build_pkg.sh" --version "$VERSION" --app "$APP_PATH"
+# --skip-notarize means the app won't be Gatekeeper-accepted; pass --force so
+# build_pkg.sh doesn't stall on its "continue anyway?" prompt for a build the
+# user already opted into as local-only.
+PKG_ARGS=(--version "$VERSION" --app "$APP_PATH")
+if [ "$SKIP_NOTARIZE" = true ]; then
+  PKG_ARGS+=(--force)
+fi
+"$REPO_ROOT/scripts/build_pkg.sh" "${PKG_ARGS[@]}"
 
 FINAL_PKG="$REPO_ROOT/dist/OpenScope-$VERSION.pkg"
 
@@ -188,7 +199,10 @@ if [ "$DO_INSTALL" = true ]; then
   sudo installer -pkg "$FINAL_PKG" -target /
   echo ""
   echo "==> Running diagnostics..."
-  openscope doctor
+  # doctor now exits non-zero when a check fails (e.g. Notes Automation not yet
+  # approved on a fresh install); don't let that abort the build under set -e.
+  openscope --version
+  openscope doctor || true
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────

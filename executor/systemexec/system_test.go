@@ -133,7 +133,16 @@ func TestManagePackagesNpmInstall(t *testing.T) {
 	}
 }
 
-func TestManagePackagesSudoManager(t *testing.T) {
+// withEUID overrides the effective-uid probe for the duration of a test.
+func withEUID(t *testing.T, uid int) {
+	t.Helper()
+	old := geteuid
+	geteuid = func() int { return uid }
+	t.Cleanup(func() { geteuid = old })
+}
+
+func sudoManagerPaths(t *testing.T) config.Paths {
+	t.Helper()
 	paths := testPaths(t)
 	cfg := fullConfig()
 	// Use a real root-owned binary so RequireSudoSafe passes at runtime.
@@ -143,14 +152,20 @@ func TestManagePackagesSudoManager(t *testing.T) {
 		}
 	}
 	writeConfig(t, paths, cfg)
+	return paths
+}
+
+func TestManagePackagesSudoManager(t *testing.T) {
+	// Legacy separated-user deployment: non-root daemon, escalation opted in.
+	paths := sudoManagerPaths(t)
+	withEUID(t, 501)
+	t.Setenv("OPENSCOPE_ALLOW_SUDO_ESCALATION", "1")
 
 	stub := &stubRunner{Result: executor.Result{Stdout: "ok", ExitCode: 0}}
 	e := Executor{Paths: paths, Runner: stub}
 
 	_, err := e.Run(emptyDef, "manage_packages", map[string]string{
-		"op":      "install",
-		"manager": "pip3",
-		"package": "jq",
+		"op": "install", "manager": "pip3", "package": "jq",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -160,6 +175,50 @@ func TestManagePackagesSudoManager(t *testing.T) {
 	}
 	if stub.LastArgs[0] != "-n" || stub.LastArgs[1] != "/usr/bin/true" {
 		t.Fatalf("expected sudo -n /usr/bin/true, got %v", stub.LastArgs)
+	}
+}
+
+func TestManagePackagesRootRunsDirect(t *testing.T) {
+	// Root daemon (the privileged-helper model): run the binary directly, never
+	// via sudo — there is no NOPASSWD wildcard for a same-uid agent to abuse.
+	paths := sudoManagerPaths(t)
+	withEUID(t, 0)
+
+	stub := &stubRunner{Result: executor.Result{Stdout: "ok", ExitCode: 0}}
+	e := Executor{Paths: paths, Runner: stub}
+
+	_, err := e.Run(emptyDef, "manage_packages", map[string]string{
+		"op": "install", "manager": "pip3", "package": "jq",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stub.LastName != "/usr/bin/true" {
+		t.Fatalf("root should run the binary directly, got %q (args %v)", stub.LastName, stub.LastArgs)
+	}
+}
+
+func TestManagePackagesSudoRefusedWithoutOptIn(t *testing.T) {
+	// Non-root daemon, no opt-in: the NOPASSWD sudo path is the broker bypass on
+	// a same-uid box, so it is refused rather than used.
+	paths := sudoManagerPaths(t)
+	withEUID(t, 501)
+	t.Setenv("OPENSCOPE_ALLOW_SUDO_ESCALATION", "")
+
+	stub := &stubRunner{Result: executor.Result{ExitCode: 0}}
+	e := Executor{Paths: paths, Runner: stub}
+
+	_, err := e.Run(emptyDef, "manage_packages", map[string]string{
+		"op": "install", "manager": "pip3", "package": "jq",
+	})
+	if err == nil {
+		t.Fatal("expected a non-root daemon without opt-in to refuse the sudo escalation")
+	}
+	if !strings.Contains(err.Error(), "needs a root broker") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stub.LastName != "" {
+		t.Fatalf("nothing should have executed, ran %q", stub.LastName)
 	}
 }
 
@@ -188,9 +247,9 @@ func TestManagePackagesSudoRejectsUserWritableBinary(t *testing.T) {
 		"package": "jq",
 	})
 	if err == nil {
-		t.Fatalf("expected sudo with user-writable binary to be rejected at runtime")
+		t.Fatalf("expected a user-writable privileged binary to be rejected at runtime")
 	}
-	if !strings.Contains(err.Error(), "refusing sudo execution") {
+	if !strings.Contains(err.Error(), "refusing privileged execution") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
@@ -794,5 +853,83 @@ func TestGenerateSudoers(t *testing.T) {
 	}
 	if strings.Contains(output, "brew") {
 		t.Fatalf("brew should not appear in sudoers (sudo=false)")
+	}
+}
+
+func TestInstallPkgGates(t *testing.T) {
+	oldEuid := geteuid
+	oldTeam := pkgTeamIDOf
+	oldLaunch := launchInstaller
+	defer func() { geteuid = oldEuid; pkgTeamIDOf = oldTeam; launchInstaller = oldLaunch }()
+	geteuid = func() int { return 0 } // install_pkg requires a root broker
+
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "OpenScope-1.0.pkg")
+	if err := os.WriteFile(pkg, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launched := ""
+	launchInstaller = func(p, _ string) error { launched = p; return nil }
+	e := Executor{}
+
+	// Fail closed: no scope configured at all.
+	if _, err := e.installPkg(admin.SystemCommands{}, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("expected refusal when no pkg scope is configured")
+	}
+
+	// Team-ID gate.
+	teamCmds := admin.SystemCommands{}
+	teamCmds.Pkg.AllowedTeamIDs = []string{"P7Y2NJ7JP3"}
+
+	pkgTeamIDOf = func(string) (string, error) { return "P7Y2NJ7JP3", nil }
+	launched = ""
+	if _, err := e.installPkg(teamCmds, map[string]string{"pkg": pkg}); err != nil {
+		t.Fatalf("matching team id should launch: %v", err)
+	}
+	if launched != pkg {
+		t.Fatalf("installer not launched for allowed pkg")
+	}
+
+	pkgTeamIDOf = func(string) (string, error) { return "WRONGTEAM00", nil }
+	if _, err := e.installPkg(teamCmds, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("expected refusal for a non-allowed signing team")
+	}
+
+	pkgTeamIDOf = func(string) (string, error) { return "", nil } // unsigned
+	if _, err := e.installPkg(teamCmds, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("expected refusal for an unsigned pkg when team-ids are required")
+	}
+
+	// Prefix gate: outside the allowed prefix.
+	outCmds := admin.SystemCommands{}
+	outCmds.Pkg.AllowedPrefixes = []string{"/some/other/dir"}
+	if _, err := e.installPkg(outCmds, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("expected refusal for a pkg outside the allowed prefix")
+	}
+
+	// Root-owned gate: a user-owned pkg is rejected (test runs as non-root).
+	rootCmds := admin.SystemCommands{}
+	rootCmds.Pkg.RequireRootOwned = true
+	if _, err := e.installPkg(rootCmds, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("expected refusal for a non-root-owned pkg")
+	}
+
+	// Non-.pkg path is rejected.
+	if _, err := e.installPkg(teamCmds, map[string]string{"pkg": filepath.Join(dir, "x.zip")}); err == nil {
+		t.Fatal("expected refusal for a non-.pkg path")
+	}
+}
+
+func TestInstallPkgNeedsRootBroker(t *testing.T) {
+	oldEuid := geteuid
+	defer func() { geteuid = oldEuid }()
+	geteuid = func() int { return 501 } // non-root daemon
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "x.pkg")
+	_ = os.WriteFile(pkg, []byte("x"), 0o644)
+	cmds := admin.SystemCommands{}
+	cmds.Pkg.RequireRootOwned = true
+	if _, err := (Executor{}).installPkg(cmds, map[string]string{"pkg": pkg}); err == nil {
+		t.Fatal("install_pkg must refuse on a non-root broker")
 	}
 }

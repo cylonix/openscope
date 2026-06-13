@@ -119,7 +119,10 @@ func TestCheckSSHKeyProtectionWeakPermissions(t *testing.T) {
 	}
 }
 
-func TestCheckSSHKeyProtectionProtectedKeyIsOK(t *testing.T) {
+func TestCheckSSHKeyProtectionUserOwnedKeyIsError(t *testing.T) {
+	// A 0600 key the agent's own user owns is still agent-readable: the broker
+	// can be bypassed by sshing directly with it. The key MUST be root-owned, so
+	// even a tidy user-owned key is an error, not an OK "protected" key.
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -146,8 +149,8 @@ func TestCheckSSHKeyProtectionProtectedKeyIsOK(t *testing.T) {
 		SSHTargetsFile: targetsPath,
 		HomeDir:        "/nonexistent-home",
 	})
-	if !check.OK {
-		t.Fatalf("expected OK for protected key, got %#v", check)
+	if check.OK {
+		t.Fatalf("expected not OK for a user-owned (non-root) key, got %#v", check)
 	}
 }
 
@@ -166,5 +169,47 @@ func TestCheckHTTPProfilesConfigCountsProfiles(t *testing.T) {
 	check := checkHTTPProfilesConfig(config.Paths{HTTPProfilesFile: path})
 	if !check.OK || !check.Present || check.Count != 1 {
 		t.Fatalf("unexpected check result: %#v", check)
+	}
+}
+
+func TestCheckPrivilegeSeparationFlagsLocalPrivilegedBrokering(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — the broker would be privilege-separated")
+	}
+	// Local install (no HTTP URL) with ssh targets, non-root broker, no root
+	// daemon installed → bypassable.
+	c := checkPrivilegeSeparation(config.Paths{}, false, ConfigCheck{Present: true, Count: 1}, ConfigCheck{})
+	if c.OK {
+		t.Fatalf("expected not OK for local privileged brokering on a non-root broker, got %+v", c)
+	}
+	if c.Separated || c.Root {
+		t.Errorf("non-root broker should be neither separated nor root, got %+v", c)
+	}
+}
+
+func TestCheckPrivilegeSeparationOKWhenRootDaemonInstalled(t *testing.T) {
+	// Same bypassable-looking config, but the root LaunchDaemon is installed:
+	// the broker runs as root regardless of doctor's own (user) euid.
+	c := checkPrivilegeSeparation(config.Paths{}, true, ConfigCheck{Present: true, Count: 1}, ConfigCheck{})
+	if !c.OK || !c.Separated || !c.Root {
+		t.Fatalf("expected separated+OK when the root daemon is installed, got %+v", c)
+	}
+}
+
+func TestCheckPrivilegeSeparationOKWhenNothingPrivileged(t *testing.T) {
+	// No ssh targets, no system commands → nothing privileged is brokered locally.
+	c := checkPrivilegeSeparation(config.Paths{}, false, ConfigCheck{}, ConfigCheck{})
+	if !c.OK {
+		t.Fatalf("expected OK when no privileged brokering is configured, got %+v", c)
+	}
+}
+
+func TestCheckPrivilegeSeparationOKForRemoteBroker(t *testing.T) {
+	// HTTP/VPC topology: the agent is remote, so there is no local same-uid agent.
+	c := checkPrivilegeSeparation(
+		config.Paths{HTTPURL: "https://broker.example:8443"}, false,
+		ConfigCheck{Present: true, Count: 3}, ConfigCheck{})
+	if !c.OK {
+		t.Fatalf("remote broker should be OK regardless of uid, got %+v", c)
 	}
 }

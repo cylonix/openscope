@@ -250,8 +250,8 @@ else
   show_evidence "$STATUS_JSON"
 fi
 
-# 2.2 openscope doctor
-DOCTOR_OUT=$(openscope doctor 2>&1 || true)
+# 2.2 openscope doctor (--json: the table is the default human output now)
+DOCTOR_OUT=$(openscope doctor --json 2>&1 || true)
 DOCTOR_OK=$(json_extract "$DOCTOR_OUT" "print(str(d.get('ok',False)).lower())")
 if [ "$DOCTOR_OK" = "true" ]; then
   record PASS "Doctor checks" "all OK"
@@ -295,8 +295,9 @@ else
   [ -f "$AGENTS_FILE" ] && show_evidence "$(cat "$AGENTS_FILE")"
 fi
 
-# 3.2 Default user policies
-POLICY_FILE="$CONFIG/policies.yaml"
+# 3.2 Default user policies (policy is now root-owned in the admin dir,
+# world-readable so these read-only checks still work without sudo)
+POLICY_FILE="/Library/Application Support/OpenScope/policies.yaml"
 if [ -f "$POLICY_FILE" ]; then
   OPENCLAW_ALLOW_COUNT=$(awk '
     BEGIN { count = 0; has_list_folders = "false"; has_mail_inbox = "false"; in_rule = 0; effect = ""; agent = ""; app = ""; action = ""; mailbox = "" }
@@ -916,40 +917,45 @@ end repeat
 EOF
 )
 if [ -n "$BLACKLIST_TEST_FOLDER" ]; then
-  POLICY_BACKUP=$(mktemp)
-  cp "$HOME/.openscope/policies.yaml" "$POLICY_BACKUP"
-  cat >> "$HOME/.openscope/policies.yaml" <<EOF
-  - effect: allow
-    agent: $AGENT
-    app: notes
-    action: list_notes
-    constraints:
-      folder: $BLACKLIST_TEST_FOLDER
-  - effect: allow
-    agent: $AGENT
-    app: notes
-    action: read_note
-    constraints:
-      folder: $BLACKLIST_TEST_FOLDER
-EOF
+  # Policy now lives root-owned in the admin dir, so granting a temporary user
+  # allow requires sudo: add it via the root-gated CLI (which writes the
+  # authoritative file), then restore the admin policy exactly as it was.
+  ADMIN_POLICY="/Library/Application Support/OpenScope/policies.yaml"
+  if sudo -n true >/dev/null 2>&1 || { [ -t 0 ] && [ -t 1 ] && sudo true >/dev/null 2>&1; }; then
+    POLICY_BACKUP=$(mktemp)
+    HAD_POLICY=0
+    if [ -f "$ADMIN_POLICY" ]; then HAD_POLICY=1; sudo cp "$ADMIN_POLICY" "$POLICY_BACKUP"; fi
 
-  DENY_OUTPUT=""
-  DENY_EC=0
-  DENY_OUTPUT=$(openscope notes list_notes --agent "$AGENT" --folder "$BLACKLIST_TEST_FOLDER" 2>&1) || DENY_EC=$?
+    sudo openscope policy allow --agent "$AGENT" --app notes --action list_notes --folder "$BLACKLIST_TEST_FOLDER" >/dev/null 2>&1
+    sudo openscope policy allow --agent "$AGENT" --app notes --action read_note  --folder "$BLACKLIST_TEST_FOLDER" >/dev/null 2>&1
 
-  mv "$POLICY_BACKUP" "$HOME/.openscope/policies.yaml"
+    DENY_OUTPUT=""
+    DENY_EC=0
+    DENY_OUTPUT=$(openscope notes list_notes --agent "$AGENT" --folder "$BLACKLIST_TEST_FOLDER" 2>&1) || DENY_EC=$?
 
-  if [ "$DENY_EC" -ne 0 ] && echo "$DENY_OUTPUT" | grep -qi "protected\|blacklist\|deny"; then
-    record PASS "Admin blacklist overrides user allow" "protected folder still denied"
-    print_status PASS "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
-    show_evidence "user policy temporarily allowed:
+    # Restore the admin policy to its pre-test state.
+    if [ "$HAD_POLICY" -eq 1 ]; then
+      sudo cp "$POLICY_BACKUP" "$ADMIN_POLICY"; sudo chmod 0644 "$ADMIN_POLICY"
+    else
+      sudo rm -f "$ADMIN_POLICY"
+    fi
+    rm -f "$POLICY_BACKUP"
+
+    if [ "$DENY_EC" -ne 0 ] && echo "$DENY_OUTPUT" | grep -qi "protected\|blacklist\|deny"; then
+      record PASS "Admin blacklist overrides user allow" "protected folder still denied"
+      print_status PASS "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
+      show_evidence "user policy temporarily allowed:
   $AGENT -> notes.list_notes [folder=$BLACKLIST_TEST_FOLDER]
 response:
 $DENY_OUTPUT"
+    else
+      record FAIL "Admin blacklist overrides user allow" "protected folder was not denied"
+      print_status FAIL "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
+      show_evidence "$DENY_OUTPUT"
+    fi
   else
-    record FAIL "Admin blacklist overrides user allow" "protected folder was not denied"
-    print_status FAIL "Admin blacklist overrides user allow" "$BLACKLIST_TEST_FOLDER"
-    show_evidence "$DENY_OUTPUT"
+    record SKIP "Admin blacklist overrides user allow" "sudo credentials unavailable (policy is root-owned)"
+    print_status SKIP "Admin blacklist overrides user allow" "needs sudo to edit root-owned policy"
   fi
 else
   record SKIP "Admin blacklist overrides user allow" "no Notes folder with private/hidden in its name"

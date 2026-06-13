@@ -105,7 +105,7 @@ func verdict(p Plan) string {
 		b.WriteString("  apply will refuse. Resolve by editing the proposal per the fixes above,\n")
 		b.WriteString("  or deliberately allow by editing bounds.yaml as root (the one explicit place).\n")
 	} else if len(p.Acknowledge) > 0 {
-		fmt.Fprintf(&b, "⚠️  VERDICT: OK with confirmation — %d high finding(s) to acknowledge at apply\n", len(p.Acknowledge))
+		fmt.Fprintf(&b, "🟠 VERDICT: OK with confirmation — %d high finding(s) to acknowledge at apply\n", len(p.Acknowledge))
 		b.WriteString("  sudo openscope apply will require typing each flagged resource to confirm.\n")
 	} else {
 		b.WriteString("✅ VERDICT: clean — no blocking or high findings\n")
@@ -116,6 +116,9 @@ func verdict(p Plan) string {
 }
 
 // sevEmoji maps a severity/status word to a leading emoji for at-a-glance scan.
+// Every glyph is a single code point that renders as 2 terminal columns — we
+// avoid ⚠️ (U+26A0 U+FE0F): the variation selector makes its width ambiguous
+// across terminals and broke table-column alignment.
 func sevEmoji(label string) string {
 	switch label {
 	case "BLOCK", "FAIL":
@@ -124,8 +127,10 @@ func sevEmoji(label string) string {
 		return "🔴"
 	case "MEDIUM":
 		return "🟡"
-	case "WARN", "acknowledge":
-		return "⚠️"
+	case "WARN", "warn":
+		return "⚪"
+	case "acknowledge":
+		return "🟠"
 	case "PASS", "pass":
 		return "✅"
 	}

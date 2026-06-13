@@ -181,3 +181,45 @@ func hasCritical(warnings []KeyWarning) bool {
 	}
 	return false
 }
+
+// A directory identity_file is invalid (KeyNotRegularFile), and — when the
+// caller can read the dir (here a user-owned temp dir, which simulates the root
+// daemon's vantage over a 0700 dir) — each non-root-owned key inside is flagged.
+func TestAuditKeyProtectionDirectoryIdentityFile(t *testing.T) {
+	keyDir := filepath.Join(t.TempDir(), "kidfence-prod")
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A non-root-owned private key + its public half inside the "key dir".
+	if err := os.WriteFile(filepath.Join(keyDir, "id_rsa"), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keyDir, "id_rsa.pub"), []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := AuditKeyProtection(admin.SSHTarget{Alias: "kidfence-prod", IdentityFile: keyDir}, "")
+
+	var invalid, perFileNotRoot bool
+	for _, w := range ws {
+		if w.Code == KeyNotRegularFile {
+			invalid = true
+		}
+		// per-file audit: the non-root-owned key inside (test runs as non-root).
+		if w.Code == KeyNotRootOwned && strings.Contains(w.Message, "id_rsa") {
+			perFileNotRoot = true
+		}
+	}
+	if !invalid {
+		t.Errorf("expected the directory identity_file flagged KeyNotRegularFile; got %+v", ws)
+	}
+	if !perFileNotRoot {
+		t.Errorf("expected the non-root-owned key inside the readable dir flagged; got %+v", ws)
+	}
+	// Honest classification: a directory is invalid, NOT a readability claim by
+	// itself. (auditKeysInDir adds the per-file readability codes when it CAN
+	// read the dir; the planner over a 0700 root dir gets EACCES and adds none.)
+	if !AgentAccessible(KeyNotRegularFile) {
+		t.Error("KeyNotRegularFile must be enforced by the executor (AgentAccessible)")
+	}
+}

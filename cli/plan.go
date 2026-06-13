@@ -21,10 +21,60 @@ import (
 	"github.com/openscope/openscope/audit"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/daemon"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
 	"github.com/openscope/openscope/proposal"
 )
+
+// parallelPathRunner is the ssh runner the apply-time bypass probe uses; nil
+// selects the default os/exec runner. Tests override it to avoid real network.
+var parallelPathRunner sshexec.CommandRunner
+
+// probeParallelPath probes each target the proposal adds with the invoking
+// user's ~/.ssh keys (BatchMode, never the broker key, runs the harmless remote
+// `true`). It returns the discovered keys and the confirmed-bypass /
+// inconclusive results. Used by the default live check in both plan and apply.
+func probeParallelPath(paths config.Paths, p proposal.Proposal) (keys []string, bypass, unknown []sshexec.BypassResult) {
+	keys = sshexec.DiscoverUserKeys(paths.HomeDir)
+	if len(keys) == 0 {
+		return keys, nil, nil
+	}
+	for _, t := range p.SSHTargets.Add {
+		for _, r := range sshexec.ProbeBypass(admin.NormalizeSSHTarget(t), keys, parallelPathRunner) {
+			switch r.Outcome {
+			case sshexec.BypassFound:
+				bypass = append(bypass, r)
+			case sshexec.BypassUnknown:
+				unknown = append(unknown, r)
+			}
+		}
+	}
+	return keys, bypass, unknown
+}
+
+// runLiveBypass probes the proposal's new targets with the invoking user's
+// ~/.ssh keys and folds the verdict into the plan via ApplyBypassResults: a
+// confirmed bypass OR an inconclusive probe becomes a blocking SSH-BYPASS
+// finding (fail closed — rejection must be proven), and an all-rejected probe
+// becomes an SSH-NO-BYPASS pass. No-op when the proposal adds no targets or the
+// user has no ~/.ssh keys (nothing to verify). Side effect: outbound ssh to each
+// target (BatchMode, runs only the harmless `true`). Progress goes to stderr so
+// it never pollutes --json stdout. Both plan and apply call this by default;
+// --skip-bypass-check skips it.
+func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
+	p := plan.Proposal
+	if len(p.SSHTargets.Add) == 0 {
+		return
+	}
+	keys, bypass, unknown := probeParallelPath(paths, p)
+	if len(keys) == 0 {
+		return // no ~/.ssh keys → no parallel path possible; nothing to verify
+	}
+	fmt.Fprintf(os.Stderr, "==> Parallel-path probe: %d new target(s) × %d ~/.ssh key(s) (BatchMode, runs only `true`)\n",
+		len(p.SSHTargets.Add), len(keys))
+	plan.ApplyBypassResults(bypass, unknown)
+}
 
 func boundsPath(paths config.Paths) string {
 	return filepath.Join(paths.AdminDir, "bounds.yaml")
@@ -57,6 +107,7 @@ func machineInfo(paths config.Paths) proposal.MachineInfo {
 		Host:          host,
 		OS:            runtime.GOOS,
 		DaemonRunning: statErr == nil,
+		HomeDir:       paths.HomeDir,
 	}
 }
 
@@ -92,7 +143,7 @@ func runPlan(paths config.Paths, args []string) int {
 	}
 	file := flags["file"]
 	if file == "" {
-		output.WriteErrorf("usage: openscope plan --file <proposal.yaml> [--json | --html [path]] [--no-open]")
+		output.WriteErrorf("usage: openscope plan --file <proposal.yaml> [--json | --html [path]] [--no-open] [--skip-bypass-check]")
 		return daemon.ExitInvalid
 	}
 
@@ -100,6 +151,15 @@ func runPlan(paths config.Paths, args []string) int {
 	if err != nil {
 		output.WriteErrorf("plan: %v", err)
 		return daemon.ExitConfigError
+	}
+
+	// Verify the parallel path live BY DEFAULT (the one thing plan can't settle
+	// statically): probe the proposed targets with the user's ~/.ssh keys and
+	// fold the verdict in, so the report below DETECTS a bypass rather than
+	// merely warning about a potential one. --skip-bypass-check stays offline for
+	// CI / unreachable hosts (the SSH-PARALLEL-PATH warning remains).
+	if flags["skip-bypass-check"] != "true" {
+		runLiveBypass(paths, &plan)
 	}
 
 	switch {
@@ -122,6 +182,7 @@ func runPlan(paths config.Paths, args []string) int {
 	default:
 		fmt.Print(proposal.RenderText(plan))
 	}
+
 	if plan.Blocked {
 		return daemon.ExitDenied
 	}
@@ -172,7 +233,7 @@ func runApply(paths config.Paths, args []string) int {
 	}
 	file := flags["file"]
 	if file == "" {
-		output.WriteErrorf("usage: sudo openscope apply --file <proposal.yaml> [--expect-hash <sha>] [--yes]")
+		output.WriteErrorf("usage: sudo openscope apply --file <proposal.yaml> [--expect-hash <sha>] [--yes] [--skip-bypass-check]")
 		return daemon.ExitInvalid
 	}
 	if err := requireRootForMutation("proposal apply"); err != nil {
@@ -198,12 +259,27 @@ func runApply(paths config.Paths, args []string) int {
 		}
 	}
 
-	// Re-render the full report from the file we actually read, so apply is
-	// self-contained and any plan→apply tampering is visible here.
+	// Verify the parallel path live before granting access (the moment it
+	// matters): a brokered SSH target is only a real boundary if the agent can't
+	// already reach the host with one of its own ~/.ssh keys. Custody of the
+	// broker's root-owned key (checked statically) is necessary but NOT
+	// sufficient. The verdict folds into the plan as a blocking SSH-BYPASS
+	// finding, so the plan.Blocked gate below refuses it — fail closed.
+	if flags["skip-bypass-check"] == "true" {
+		output.WriteErrorf("WARNING: --skip-bypass-check — NOT verifying that your ~/.ssh keys are unable to reach the new target(s); the broker boundary is unproven")
+	} else {
+		runLiveBypass(paths, &plan)
+	}
+
+	// apply runs the SAME plan as `openscope plan` and refuses unless it passes —
+	// there is no flag to apply an un-planned or blocked proposal. Re-rendering
+	// the full report from the file we actually read also makes apply
+	// self-contained and any plan→apply tampering visible here.
+	fmt.Println("==> Preflight: planning the proposal (identical gate to `openscope plan`)…")
 	fmt.Print(proposal.RenderText(plan))
 
 	if plan.Blocked {
-		output.WriteErrorf("apply refused: %d bounds violation(s) — resolve the proposal or edit %s as root",
+		output.WriteErrorf("apply refused: plan is BLOCKED by %d bounds violation(s) — resolve the proposal (see the fixes above) or widen %s as root",
 			len(plan.Blocking), boundsPath(paths))
 		return daemon.ExitDenied
 	}
@@ -251,8 +327,10 @@ func confirmAcknowledgements(findings []proposal.Finding) error {
 	defer tty.Close()
 	reader := bufio.NewReader(tty)
 	for i, f := range findings {
-		fmt.Fprintf(tty, "\n[%d/%d] HIGH %s — %s\n  %s\n  Type the resource name above to confirm (blank aborts): ",
-			i+1, len(findings), f.RuleID, f.Resource, f.Summary)
+		// Echo the EXACT string to type — "the resource name" alone left people
+		// hunting for which token on the header line they had to enter.
+		fmt.Fprintf(tty, "\n[%d/%d] HIGH %s — %s\n  %s\n  To confirm, type exactly:  %s\n  (blank aborts) > ",
+			i+1, len(findings), f.RuleID, f.Resource, f.Summary, f.Resource)
 		line, _ := reader.ReadString('\n')
 		if strings.TrimSpace(line) != strings.TrimSpace(f.Resource) {
 			return fmt.Errorf("confirmation for %q did not match", f.Resource)
@@ -276,11 +354,32 @@ func applyProposal(paths config.Paths, p proposal.Proposal, liveSystem admin.Sys
 		return fmt.Errorf("%w (no changes applied — config restored)", err)
 	}
 
+	// Policy now lives root-owned in the admin dir; drop any legacy user-owned
+	// copy so there is a single, agent-unwritable source of truth.
+	migratePolicyLocation(paths)
+
 	// Order matters: create the files first, THEN hand them back to the
 	// invoking user, so root-created files aren't left unreadable by the daemon.
 	auditApply(paths, p)
 	chownTreeToInvoker(paths)
 	return nil
+}
+
+// migratePolicyLocation removes the legacy user-owned policies.yaml once policy
+// has been written to its root-owned admin-dir location. apply runs as root, so
+// the unlink succeeds regardless of the legacy file's owner. Only runs after a
+// successful apply (the new file exists), so a failed apply never strands the
+// install without a policy.
+func migratePolicyLocation(paths config.Paths) {
+	if paths.LegacyPoliciesFile == "" || paths.LegacyPoliciesFile == paths.PoliciesFile {
+		return
+	}
+	if _, err := os.Stat(paths.PoliciesFile); err != nil {
+		return // new location not written — leave the legacy file in place
+	}
+	if _, err := os.Stat(paths.LegacyPoliciesFile); err == nil {
+		_ = os.Remove(paths.LegacyPoliciesFile)
+	}
 }
 
 func applyMutations(paths config.Paths, p proposal.Proposal, liveSystem admin.SystemCommands) error {
@@ -451,10 +550,18 @@ func chownTreeToInvoker(paths config.Paths) {
 	var uid, gid int
 	fmt.Sscanf(u.Uid, "%d", &uid)
 	fmt.Sscanf(u.Gid, "%d", &gid)
-	for _, path := range []string{
-		paths.ConfigDir, paths.RunDir, paths.StateDir, paths.AppsDir,
-		paths.PoliciesFile, paths.AgentsFile, paths.AuditFile,
-	} {
+	// PoliciesFile is intentionally absent: policy lives root-owned in the admin
+	// dir so a same-uid agent cannot edit or replace the rules that confine it.
+	chownTargets := []string{
+		paths.ConfigDir, paths.RunDir, paths.StateDir, paths.AppsDir, paths.AgentsFile,
+	}
+	// In a root-daemon install the audit log is root-owned in the admin dir (the
+	// agent can read but not erase it); only the per-user deployment hands it
+	// back to the invoking user so the non-root daemon can append.
+	if !config.SystemMode() {
+		chownTargets = append(chownTargets, paths.AuditFile)
+	}
+	for _, path := range chownTargets {
 		if path != "" {
 			_ = os.Chown(path, uid, gid)
 		}

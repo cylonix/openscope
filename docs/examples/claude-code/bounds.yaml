@@ -7,7 +7,11 @@ version: 1
 # Findings with these rule IDs hard-fail apply (override only by editing here).
 blocking_rules:
   - SYS-APP-CODEEXEC
+  - SYS-PKG-CODEEXEC
   - SSH-SECRET-PATH
+  - SSH-KEY-READABLE
+  - SSH-KEY-INVALID
+  - SSH-BYPASS
   - SYS-SUDO-MANAGER
   - SSH-TARGET-CONFLICT
   - POLICY-MAX-TARGETS
@@ -44,7 +48,10 @@ ssh:
     - docker-compose.yml
     - docker-compose.yaml
     - .env
-  require_identity_file: false
+  # Brokered ssh access MUST use an explicit, root-owned identity_file — no
+  # ~/.ssh fallback, which is readable by the agent. Set false only on a
+  # personal install that knowingly accepts an agent-readable key.
+  require_identity_file: true
 
 system:
   deny_app_install_from_writable_source: true

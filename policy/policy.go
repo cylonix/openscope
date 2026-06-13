@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/config"
@@ -47,7 +48,24 @@ func Load(path string) (File, error) {
 }
 
 func LoadDefault(paths config.Paths) (File, error) {
-	return Load(paths.PoliciesFile)
+	return Load(defaultPoliciesPath(paths))
+}
+
+// defaultPoliciesPath returns the root-owned policy file, falling back to the
+// legacy user-owned location only when the new one does not yet exist — so an
+// install upgraded before its next `sudo apply` keeps enforcing its policy.
+// Writes always target PoliciesFile (the root-owned location); the fallback is
+// read-only.
+func defaultPoliciesPath(paths config.Paths) string {
+	if paths.LegacyPoliciesFile == "" {
+		return paths.PoliciesFile
+	}
+	if _, err := os.Stat(paths.PoliciesFile); errors.Is(err, os.ErrNotExist) {
+		if _, lerr := os.Stat(paths.LegacyPoliciesFile); lerr == nil {
+			return paths.LegacyPoliciesFile
+		}
+	}
+	return paths.PoliciesFile
 }
 
 func LoadDefaultOrEmpty(paths config.Paths) (File, error) {
@@ -69,8 +87,18 @@ func Save(path string, pf File) error {
 	if err != nil {
 		return fmt.Errorf("marshal policy file: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create policy dir: %w", err)
+	}
+	// 0644: the policy lives root-owned in the admin dir and must stay readable
+	// by the (non-root) daemon. Rules are authorization, not secrets. Chmod
+	// explicitly so a restrictive umask (or a pre-existing 0600 file) can't leave
+	// it unreadable by the daemon.
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write policy file: %w", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return fmt.Errorf("chmod policy file: %w", err)
 	}
 	return nil
 }

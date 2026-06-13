@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -36,7 +37,16 @@ type Action struct {
 	Description string      `yaml:"description"`
 	Parameters  []Parameter `yaml:"parameters"`
 	Output      Output      `yaml:"output"`
-	Script      string      `yaml:"script"`
+	// Script names a bundled/templated artifact (e.g. an AppleScript file) for
+	// executors that render a script. Command is the alternative for the ssh
+	// executor: a remote sh command template whose `{param}` placeholders are
+	// substituted with the (shell-quoted) parameter values at run time. An
+	// action declares one or the other. Stdin, if set, is rendered the same way
+	// and piped to the remote command's standard input (e.g. file content for a
+	// write action). The executor — not this schema — decides which it reads.
+	Script  string `yaml:"script"`
+	Command string `yaml:"command"`
+	Stdin   string `yaml:"stdin"`
 }
 
 type Parameter struct {
@@ -44,6 +54,12 @@ type Parameter struct {
 	Type      string `yaml:"type" json:"type"`
 	Required  bool   `yaml:"required" json:"required"`
 	PolicyKey string `yaml:"policy_key" json:"policy_key,omitempty"`
+	// Constraint binds a parameter to the target's admin allow-lists before it
+	// is substituted into a Command/Stdin template: "path" → must satisfy the
+	// SSH target's allowed_paths/allowed_path_prefixes; "service" → must satisfy
+	// allowed_services. Empty means a free parameter (still shell-quoted, so it
+	// cannot inject). Enforced by the ssh executor.
+	Constraint string `yaml:"constraint,omitempty" json:"constraint,omitempty"`
 }
 
 type Output struct {
@@ -139,9 +155,10 @@ func (d *Definition) Validate() error {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("action name is required")
 		}
-		if action.Script == "" {
-			return fmt.Errorf("action %q missing script", name)
+		if action.Script == "" && action.Command == "" {
+			return fmt.Errorf("action %q must declare a script or a command", name)
 		}
+		declared := map[string]struct{}{}
 		for _, param := range action.Parameters {
 			if param.Name == "" {
 				return fmt.Errorf("action %q has parameter with missing name", name)
@@ -149,10 +166,37 @@ func (d *Definition) Validate() error {
 			if param.Type == "" {
 				return fmt.Errorf("action %q parameter %q missing type", name, param.Name)
 			}
+			switch param.Constraint {
+			case "", "path", "service":
+			default:
+				return fmt.Errorf("action %q parameter %q has unknown constraint %q (want path|service)", name, param.Name, param.Constraint)
+			}
+			declared[param.Name] = struct{}{}
+		}
+		// Every {placeholder} in the command/stdin template must name a declared
+		// parameter — otherwise it would silently substitute to the empty string.
+		for _, tmpl := range []string{action.Command, action.Stdin} {
+			for _, ref := range referencedParams(tmpl) {
+				if _, ok := declared[ref]; !ok {
+					return fmt.Errorf("action %q template references undeclared parameter %q", name, ref)
+				}
+			}
 		}
 	}
 
 	return nil
+}
+
+var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
+
+// referencedParams returns the parameter names a command/stdin template
+// references via {name} placeholders.
+func referencedParams(tmpl string) []string {
+	var out []string
+	for _, m := range placeholderRE.FindAllStringSubmatch(tmpl, -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 func (d Definition) Action(name string) (Action, bool) {

@@ -17,10 +17,12 @@ import (
 	"github.com/openscope/openscope/agent"
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/authtoken"
+	"github.com/openscope/openscope/buildinfo"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/daemon"
 	"github.com/openscope/openscope/doctor"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/executor/systemexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
@@ -30,6 +32,16 @@ import (
 )
 
 func Run(args []string) int {
+	// Version is answered before config resolution so `openscope --version`
+	// works even on a half-installed or misconfigured machine — it's the first
+	// thing you reach for when figuring out which build is on disk.
+	if len(args) > 0 {
+		switch args[0] {
+		case "version", "--version", "-V":
+			return runVersion(args[1:])
+		}
+	}
+
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		output.WriteErrorf("config error: %v", err)
@@ -57,6 +69,9 @@ func Run(args []string) int {
 	if args[0] == "ssh" && len(args) > 1 && args[1] == "targets" {
 		return runSSHTargets(paths, args[2:])
 	}
+	if args[0] == "ssh" && len(args) > 1 && args[1] == "check-bypass" {
+		return runSSHCheckBypass(paths, args[2:])
+	}
 	if args[0] == "system" && len(args) > 1 && args[1] == "commands" {
 		return runSystemCommands(paths, args[2:])
 	}
@@ -76,7 +91,7 @@ func Run(args []string) int {
 	case "status":
 		return runStatus(paths)
 	case "doctor":
-		return runDoctor(paths)
+		return runDoctor(paths, args[1:])
 	case "enroll":
 		return runEnroll(paths, args[1:])
 	case "plan":
@@ -536,6 +551,97 @@ func runSSHTargets(paths config.Paths, args []string) int {
 	}
 }
 
+// runSSHCheckBypass probes whether the invoking user's own ~/.ssh keys can
+// authenticate to the configured SSH targets. An agent-readable key that
+// reaches a brokered host bypasses the broker entirely (the agent just sshes
+// directly), so even a perfectly root-owned broker key is moot. It makes real
+// outbound ssh connections — running only the harmless remote command `true` —
+// and is therefore opt-in: it runs only when invoked explicitly, never as part
+// of plan/doctor. Exit code 3 (denied) if any key reaches a host.
+func runSSHCheckBypass(paths config.Paths, args []string) int {
+	flags, err := parseFlags(args)
+	if err != nil {
+		output.WriteErrorf("%v", err)
+		return daemon.ExitInvalid
+	}
+	targets, err := admin.LoadSSHTargetsOrDefault(paths)
+	if err != nil {
+		output.WriteErrorf("load ssh targets: %v", err)
+		return daemon.ExitConfigError
+	}
+	only := strings.TrimSpace(flags["target"])
+	keys := sshexec.DiscoverUserKeys(paths.HomeDir)
+
+	var results []sshexec.BypassResult
+	probed := 0
+	for _, t := range targets.Targets {
+		if only != "" && t.Alias != only {
+			continue
+		}
+		probed++
+		results = append(results, sshexec.ProbeBypass(t, keys, nil)...)
+	}
+
+	bypassed := 0
+	for _, r := range results {
+		if r.Outcome == sshexec.BypassFound {
+			bypassed++
+		}
+	}
+
+	if flags["json"] == "true" {
+		if code := writeJSON(map[string]any{
+			"checked_targets": probed,
+			"user_keys":       keys,
+			"results":         results,
+			"bypass_found":    bypassed,
+		}); code != daemon.ExitOK {
+			return code
+		}
+	} else {
+		printBypassReport(keys, results, bypassed, probed)
+	}
+	if bypassed > 0 {
+		return daemon.ExitDenied
+	}
+	return daemon.ExitOK
+}
+
+func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, probed int) {
+	fmt.Println("OpenScope ssh bypass probe (outbound — ran `true` on each reachable host)")
+	fmt.Printf("  ~/.ssh keys discovered: %d   targets probed: %d\n", len(keys), probed)
+	if len(keys) == 0 {
+		fmt.Println("  no private keys in ~/.ssh — nothing to probe")
+		return
+	}
+	if len(results) == 0 {
+		fmt.Println("  no targets matched")
+		return
+	}
+	fmt.Println()
+	for _, r := range results {
+		mark := "inconclusive"
+		switch r.Outcome {
+		case sshexec.BypassFound:
+			mark = "BYPASS"
+		case sshexec.BypassClear:
+			mark = "clear"
+		}
+		line := fmt.Sprintf("  [%-12s] %s (%s) via %s", mark, r.Target, r.Host, filepath.Base(r.Key))
+		if r.Detail != "" {
+			line += " — " + r.Detail
+		}
+		fmt.Println(line)
+	}
+	fmt.Println()
+	if bypassed > 0 {
+		fmt.Printf("ERROR: %d user-key/host pair(s) authenticate directly — the broker is bypassable.\n", bypassed)
+		fmt.Println("Remove that key from the host's authorized_keys (or stop brokering the host); brokered access must use a root-owned key only.")
+	} else {
+		fmt.Println("OK: no ~/.ssh key authenticated to a brokered host.")
+	}
+}
+
 func runHTTPProfiles(paths config.Paths, args []string) int {
 	if len(args) == 0 {
 		output.WriteErrorf("usage: openscope http profiles <list|add|remove>")
@@ -943,8 +1049,49 @@ func runStatus(paths config.Paths) int {
 	return writeJSON(status.Snapshot(paths))
 }
 
-func runDoctor(paths config.Paths) int {
-	return writeJSON(doctor.Run(paths))
+func runVersion(args []string) int {
+	info := buildinfo.Get()
+	for _, a := range args {
+		if a == "--json" {
+			return writeJSON(info)
+		}
+	}
+	fmt.Println("openscope " + buildinfo.String())
+	return daemon.ExitOK
+}
+
+func runDoctor(paths config.Paths, args []string) int {
+	report := doctor.Run(paths)
+	color := useColor()
+	for _, a := range args {
+		switch a {
+		case "--json":
+			return writeJSON(report)
+		case "--no-color":
+			color = false
+		case "--color":
+			color = true
+		}
+	}
+	fmt.Print(report.Text(color))
+	if !report.OK {
+		return daemon.ExitConfigError
+	}
+	return daemon.ExitOK
+}
+
+// useColor reports whether to emit ANSI color on stdout: it must be a terminal,
+// NO_COLOR (https://no-color.org) must be unset, and TERM must not be "dumb".
+// Piped or redirected output (incl. `| cat`) gets plain text automatically.
+func useColor() bool {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func runProtectedAction(paths config.Paths, args []string) int {
@@ -1579,12 +1726,16 @@ func printUsage() {
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Setup:")
 	_, _ = fmt.Fprintln(w, "  init [--force]                    Initialize default config (~/.openscope/)")
+	_, _ = fmt.Fprintln(w, "  version                           Show the installed version (--json for fields)")
 	_, _ = fmt.Fprintln(w, "  status                            Show daemon and config status")
-	_, _ = fmt.Fprintln(w, "  doctor                            Run diagnostics and show hints")
+	_, _ = fmt.Fprintln(w, "  doctor [--json] [--no-color]      Run diagnostics (colored table by default; --json for scripts)")
 	_, _ = fmt.Fprintln(w, "  plan --file <proposal.yaml>       Review a privilege proposal: consequences,")
 	_, _ = fmt.Fprintln(w, "                                    lint findings, and bounds verdict (no sudo)")
 	_, _ = fmt.Fprintln(w, "      [--json | --html [path]] [--no-open]   Machine output, or an HTML report")
-	_, _ = fmt.Fprintln(w, "  apply --file <proposal.yaml>      Apply a reviewed proposal after confirmation (sudo)")
+	_, _ = fmt.Fprintln(w, "      [--skip-bypass-check]             Skip the live ~/.ssh→target bypass probe (offline/CI)")
+	_, _ = fmt.Fprintln(w, "  apply --file <proposal.yaml>      Apply a reviewed proposal after confirmation (sudo);")
+	_, _ = fmt.Fprintln(w, "                                    re-runs plan + verifies no ~/.ssh key can reach new")
+	_, _ = fmt.Fprintln(w, "                                    SSH targets ([--skip-bypass-check] to override)")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "Agents:")
 	_, _ = fmt.Fprintln(w, "  agent register <id>               Register an agent")
@@ -1622,6 +1773,9 @@ func printUsage() {
 	_, _ = fmt.Fprintln(w, "      [--services <a,b>] [--paths <a,b>] [--path-prefixes <a,b>]")
 	_, _ = fmt.Fprintln(w, "                                    Add an SSH target (sudo)")
 	_, _ = fmt.Fprintln(w, "  ssh targets remove <alias>        Remove an SSH target (sudo)")
+	_, _ = fmt.Fprintln(w, "  ssh check-bypass [--target <alias>] [--json]")
+	_, _ = fmt.Fprintln(w, "                                    Probe whether your ~/.ssh keys can reach")
+	_, _ = fmt.Fprintln(w, "                                    brokered hosts directly (opt-in, outbound ssh)")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "HTTP profiles:")
 	_, _ = fmt.Fprintln(w, "  http profiles list                List configured HTTP profiles")

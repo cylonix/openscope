@@ -4,10 +4,9 @@
 
 # build_pkg.sh — Build OpenScope.pkg from an exported, notarized app bundle.
 #
-# Step 1 (Xcode): Product → Archive → Distribute App → Developer ID
-#                 Export the notarized OpenScope.app to dist/export/
-#
-# Step 2 (this script):
+# Most of the time you want scripts/build_release.sh, which archives, exports,
+# notarizes, AND calls this script in one step. Run this directly only to
+# re-package an app already exported to dist/export/:
 #   scripts/build_pkg.sh --version 0.1.0
 #
 # Options:
@@ -33,6 +32,7 @@ TEAM_ID="${AGENTSCOPE_TEAM_ID:-}"
 # ── Defaults ─────────────────────────────────────────────────────────────────
 VERSION=""
 OUTPUT_DIR="$REPO_ROOT/dist"
+FORCE=false   # skip the "not Gatekeeper-accepted" confirmation (local builds)
 
 # Auto-detect the app: prefer dist/export/OpenScope.app, then find the most
 # recently modified OpenScope.app inside any dist/export/ subdirectory
@@ -53,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --version) VERSION="$2"; shift 2 ;;
     --app)     APP_PATH="$2"; shift 2 ;;
     --output)  OUTPUT_DIR="$2"; shift 2 ;;
+    --force)   FORCE=true; shift ;;
     -h|--help)
       sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \?//'
       exit 0 ;;
@@ -80,10 +81,10 @@ if [ ! -d "$APP_PATH" ]; then
   echo "" >&2
   echo "error: OpenScope.app not found (checked dist/export/ and subdirectories)" >&2
   echo "" >&2
-  echo "In Xcode: Product → Archive, then in the Organizer:" >&2
-  echo "  Distribute App → Developer ID → Export → save to dist/export/" >&2
+  echo "Run the full pipeline instead: scripts/build_release.sh --version <ver>" >&2
+  echo "(it archives + exports the app, then calls this script)." >&2
   echo "" >&2
-  echo "Or pass a different path: --app /path/to/OpenScope.app" >&2
+  echo "Or pass an already-exported bundle: --app /path/to/OpenScope.app" >&2
   exit 1
 fi
 
@@ -91,7 +92,8 @@ for required in \
     "$APP_PATH/Contents/Resources/bin/openscope" \
     "$APP_PATH/Contents/Resources/bin/openscoped" \
     "$APP_PATH/Contents/Resources/bin/asapple" \
-    "$APP_PATH/Contents/Resources/launchd/com.ezblock.openscope.openscoped.plist"
+    "$APP_PATH/Contents/Resources/launchd/com.ezblock.openscope.openscoped.plist" \
+    "$APP_PATH/Contents/Resources/launchd/com.ezblock.openscope.session.plist"
 do
   if [ ! -f "$required" ]; then
     echo "error: missing from app bundle: $required" >&2
@@ -108,11 +110,20 @@ if spctl --assess -v "$APP_PATH" 2>&1 | grep -q "accepted"; then
 else
   echo "    warning: not accepted by Gatekeeper" >&2
   echo "    Pilot users on other machines will be blocked unless the app is notarized." >&2
-  printf "    Continue anyway? [y/N] "
-  read -r confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo "Aborted."
+  if [ "$FORCE" = true ]; then
+    echo "    --force: continuing with an unnotarized package (local build)" >&2
+  elif [ ! -t 0 ]; then
+    # No TTY to prompt on (CI, a backgrounded build): fail loudly rather than
+    # silently consuming EOF as "No". Pass --force for an intentional local pkg.
+    echo "    error: not Gatekeeper-accepted and no terminal to confirm — re-run with --force (or without --skip-notarize)" >&2
     exit 1
+  else
+    printf "    Continue anyway? [y/N] "
+    read -r confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+      echo "Aborted."
+      exit 1
+    fi
   fi
 fi
 

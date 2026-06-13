@@ -127,6 +127,17 @@ actions:
       schema: system_apps
     script: manage_apps
 
+  install_pkg:
+    description: Install a macOS .pkg as root (scoped by pkg.allowed_prefixes / require_root_owned / allowed_team_ids; launched detached)
+    parameters:
+      - name: pkg
+        type: string
+        required: true
+        policy_key: pkg
+    output:
+      mode: json
+    script: install_pkg
+
   build:
     description: Build projects with xcodebuild
     parameters:

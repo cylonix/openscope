@@ -9,12 +9,41 @@ import (
 
 	"path/filepath"
 
+	"github.com/openscope/openscope/buildinfo"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/daemon"
+	appleexec "github.com/openscope/openscope/executor/applescript"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println("openscoped " + buildinfo.String())
+		return
+	}
+
+	// Log the build identity to the daemon log on startup — this is the line
+	// that tells you which build launchd is actually running (vs. what's on
+	// disk), without resorting to md5'ing the binary.
+	fmt.Fprintf(os.Stderr, "openscoped %s starting\n", buildinfo.String())
+
+	// Session-helper mode (phase 4, macOS): the user-session LaunchAgent that
+	// holds the Notes/Mail TCC grant and runs asapple for the root daemon. It
+	// serves only the applescript handoff on a root-only socket — no policy, no
+	// CLI socket, no other executors.
+	if len(os.Args) > 1 && os.Args[1] == "--session-helper" {
+		sock := os.Getenv("OPENSCOPE_SESSION_SOCKET")
+		if sock == "" {
+			_, _ = fmt.Fprintln(os.Stderr, "--session-helper requires OPENSCOPE_SESSION_SOCKET")
+			os.Exit(daemon.ExitConfigError)
+		}
+		if err := appleexec.ServeSession(sock); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "session helper error: %v\n", err)
+			os.Exit(daemon.ExitExecutorError)
+		}
+		return
+	}
+
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "config error: %v\n", err)

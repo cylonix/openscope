@@ -73,9 +73,9 @@ The PKG runs `scripts/pkg/preinstall` and `scripts/pkg/postinstall` as root:
    - `run_nemoclaw_demo_container.sh`
    - `setup_nemoclaw_demo.sh`
    - prebuilt Linux `openscope` client binaries for `arm64` and `amd64`
-8. Seeds `~/.openscope/agents.yaml` with an `openclaw` agent and `policies.yaml`
-   with default Notes access plus Mail `Inbox`-only read access when those files
-   do not already exist;
+8. Seeds `~/.openscope/agents.yaml` with an `openclaw` agent and a root-owned
+   `<AdminDir>/policies.yaml` with default Notes access plus Mail `Inbox`-only read
+   access when those files do not already exist;
    existing user config is left untouched and can be reset intentionally with
    `openscope init --force`
 9. Seeds `/Library/Application Support/OpenScope/protected_folders.yaml` with

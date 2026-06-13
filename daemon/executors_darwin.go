@@ -6,6 +6,8 @@
 package daemon
 
 import (
+	"os"
+
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
 	appleexec "github.com/openscope/openscope/executor/applescript"
@@ -18,9 +20,21 @@ import (
 // Apple-app automation through the signed asapple helper.
 func defaultExecutors(paths config.Paths) map[string]executor.Runner {
 	return map[string]executor.Runner{
-		"applescript": appleexec.Executor{},
+		"applescript": chooseAppleExecutor(os.Geteuid(), os.Getenv("OPENSCOPE_SESSION_SOCKET")),
 		"http":        httpexec.Executor{Paths: paths},
 		"ssh":         sshexec.Executor{Paths: paths},
 		"system":      systemexec.Executor{Paths: paths},
 	}
+}
+
+// chooseAppleExecutor selects how Apple-event actions run. A root daemon (the
+// phase-4 privileged-helper model) is not in the user's GUI session and cannot
+// hold the Notes/Mail TCC grant, so it forwards execution to the user-session
+// agent (`openscoped --session-helper`) over OPENSCOPE_SESSION_SOCKET. A
+// non-root daemon (the legacy per-user LaunchAgent) runs asapple directly.
+func chooseAppleExecutor(euid int, sessionSocket string) executor.Runner {
+	if euid == 0 && sessionSocket != "" {
+		return appleexec.Executor{Helper: appleexec.NewForwarder(sessionSocket)}
+	}
+	return appleexec.Executor{}
 }

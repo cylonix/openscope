@@ -28,9 +28,11 @@ sudo openscope apply --file setup.proposal.yaml --expect-hash <sha>
 
 `plan` exits 3 when a bounds rule blocks (good for CI gating); `--html [path]`
 writes a styled report and launches the browser (`--no-open` to skip, `--json`
-for machine output); `apply` refuses on any block and requires you to type each
-high-risk resource to confirm. See `setup.plan.txt` / `setup.plan.html` for what
-the review looks like on the example proposal.
+for machine output). `apply` re-runs that exact plan as a preflight — there is
+no way to apply an un-planned or blocked proposal — and on top of refusing any
+block it requires you to type each high-risk resource to confirm. See
+`setup.plan.txt` / `setup.plan.html` for what the review looks like on the
+example proposal.
 
 Quick install:
 

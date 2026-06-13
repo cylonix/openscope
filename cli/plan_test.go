@@ -4,14 +4,108 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/config"
+	"github.com/openscope/openscope/executor"
 	"github.com/openscope/openscope/policy"
 	"github.com/openscope/openscope/proposal"
 )
+
+// bypassStub stands in for the ssh runner the parallel-path probe uses.
+type bypassStub struct {
+	result executor.Result
+	err    error
+}
+
+func (s bypassStub) Run(name string, args []string, stdin string) (executor.Result, error) {
+	return s.result, s.err
+}
+
+// bypassPlanYAML adds a target with a root-owned identity_file (so the static
+// SSH-KEY-READABLE check doesn't fire) and a non-root user (no SSH-ROOT-USER) —
+// isolating the live parallel-path verdict as the only thing that can block.
+const bypassPlanYAML = `
+version: 1
+kind: openscope-proposal
+metadata: {name: bypass-test}
+ssh_targets:
+  add:
+    - {alias: web, host: web.example.com, user: deploy, identity_file: /var/openscope/ssh/web, allowed_path_prefixes: [/var/log/nginx]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: web}}
+`
+
+func homeWithKey(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"id_test", "id_test.pub"} {
+		if err := os.WriteFile(filepath.Join(sshDir, f), []byte("k"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
+}
+
+func bypassPlan(t *testing.T, home string) proposal.Plan {
+	t.Helper()
+	p, err := proposal.Parse([]byte(bypassPlanYAML), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proposal.BuildPlan(p, proposal.LiveState{}, nil, proposal.DefaultBounds(), "d", proposal.MachineInfo{HomeDir: home})
+}
+
+func TestRunLiveBypassFoldsVerdictIntoPlan(t *testing.T) {
+	home := homeWithKey(t)
+	paths := testPaths(t)
+	paths.HomeDir = home
+
+	old := parallelPathRunner
+	defer func() { parallelPathRunner = old }()
+
+	// ssh exits 0 → the user key authenticates → blocking SSH-BYPASS.
+	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 0}}
+	plan := bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if !plan.Blocked {
+		t.Fatalf("expected plan BLOCKED when a ~/.ssh key reaches the target")
+	}
+
+	// publickey refused → conclusively rejected → not blocked (SSH-NO-BYPASS).
+	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if plan.Blocked {
+		t.Fatalf("expected plan OK when the key is conclusively refused")
+	}
+
+	// inconclusive (timeout) → fail closed → blocked. Must confirm rejection.
+	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 255, Stderr: "ssh: connect to host x port 22: Operation timed out"}}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if !plan.Blocked {
+		t.Fatalf("expected plan BLOCKED when the probe is inconclusive (fail closed)")
+	}
+}
+
+func TestRunLiveBypassNoopWithoutUserKeys(t *testing.T) {
+	paths := testPaths(t)
+	paths.HomeDir = t.TempDir() // no ~/.ssh → no parallel path possible
+	plan := bypassPlan(t, paths.HomeDir)
+	runLiveBypass(paths, &plan) // must not block (and must not panic)
+	if plan.Blocked {
+		t.Fatalf("no ~/.ssh keys → nothing to verify, plan must not be blocked")
+	}
+}
 
 func testPaths(t *testing.T) config.Paths {
 	t.Helper()
@@ -139,6 +233,40 @@ ssh_targets:
 	}
 	if t2, ok := admin.FindSSHTarget(targets, "web2"); !ok || t2.Host != "OLD.example.com" {
 		t.Error("pre-existing web2 should be unchanged after rollback")
+	}
+}
+
+func TestApplyMigratesLegacyPolicyToAdminDir(t *testing.T) {
+	paths := testPaths(t)
+	// Policy points at the root-owned admin dir, with the legacy user-owned
+	// location as the pre-migration fallback.
+	paths.PoliciesFile = filepath.Join(paths.AdminDir, "policies.yaml")
+	paths.LegacyPoliciesFile = filepath.Join(paths.ConfigDir, "policies.yaml")
+
+	// An upgraded install already has a rule in the legacy location.
+	if err := policy.Save(paths.LegacyPoliciesFile, policy.File{Version: 1,
+		Rules: []policy.Rule{{Effect: "allow", Agent: "legacy", App: "ssh", Action: "read_file"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	p, _ := proposal.Parse([]byte(applyProposalYAML), "x")
+	if err := applyHelper(t, paths, p); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if _, err := os.Stat(paths.PoliciesFile); err != nil {
+		t.Fatalf("policy not written to the admin dir: %v", err)
+	}
+	if _, err := os.Stat(paths.LegacyPoliciesFile); !os.IsNotExist(err) {
+		t.Errorf("legacy policy file should be removed after migration (stat err = %v)", err)
+	}
+	pf, err := policy.LoadDefaultOrEmpty(paths)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// The legacy rule is preserved and merged with the proposal's two rules.
+	if len(pf.Rules) != 3 {
+		t.Errorf("expected legacy(1)+proposal(2)=3 rules, got %d: %+v", len(pf.Rules), pf.Rules)
 	}
 }
 

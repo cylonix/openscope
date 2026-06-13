@@ -81,10 +81,19 @@ LAUNCHD_DIR="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/launchd"
 mkdir -p "$BIN_DIR" "$LAUNCHD_DIR"
 
 cd "$ROOT"
-go build -o "$BIN_DIR/openscope" ./cmd/openscope
-go build -o "$BIN_DIR/openscoped" ./cmd/openscoped
 
-cp "$ROOT/macos/LaunchAgent/com.ezblock.openscope.openscoped.plist" "$LAUNCHD_DIR/"
+# Stamp the release version into the binaries. build_release.sh exports
+# OPENSCOPE_VERSION; a plain Xcode build falls back to `git describe`.
+OPENSCOPE_VERSION="${OPENSCOPE_VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+LDFLAGS="-X github.com/openscope/openscope/buildinfo.Version=$OPENSCOPE_VERSION"
+go build -ldflags "$LDFLAGS" -o "$BIN_DIR/openscope" ./cmd/openscope
+go build -ldflags "$LDFLAGS" -o "$BIN_DIR/openscoped" ./cmd/openscoped
+
+# Phase 4 (two-daemon): bundle BOTH launchd plists — the root LaunchDaemon and
+# the user-session helper LaunchAgent. The .pkg postinstall installs them to
+# /Library/LaunchDaemons and ~/Library/LaunchAgents respectively.
+cp "$ROOT/macos/LaunchDaemon/com.ezblock.openscope.openscoped.plist" "$LAUNCHD_DIR/"
+cp "$ROOT/macos/LaunchAgent/com.ezblock.openscope.session.plist" "$LAUNCHD_DIR/"
 ```
 
 If you prefer, `openscope` can instead be installed by the `.pkg` outside the app bundle. That is likely the better long-term install story for CLI usability.

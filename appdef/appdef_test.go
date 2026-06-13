@@ -43,3 +43,71 @@ func TestDefinitionPolicyContextIgnoresConstraintsForPassthroughApps(t *testing.
 		t.Fatalf("expected passthrough apps to ignore parameter constraints, got %#v", got)
 	}
 }
+
+func TestValidateAcceptsCommandActionAndConstraints(t *testing.T) {
+	def, err := Parse([]byte(`
+version: 1
+app:
+  name: ssh
+  executor: ssh
+actions:
+  write_file:
+    command: "cat > {path}"
+    stdin: "{content}"
+    parameters:
+      - {name: target, type: string, required: true, policy_key: target}
+      - {name: path, type: string, required: true, constraint: path}
+      - {name: content, type: string, required: true}
+`), "test")
+	if err != nil {
+		t.Fatalf("command action should validate: %v", err)
+	}
+	a, ok := def.Action("write_file")
+	if !ok || a.Command == "" || a.Stdin == "" {
+		t.Fatalf("command/stdin not parsed: %+v", a)
+	}
+}
+
+func TestValidateRejectsActionWithoutScriptOrCommand(t *testing.T) {
+	_, err := Parse([]byte(`
+version: 1
+app: {name: ssh, executor: ssh}
+actions:
+  frob:
+    parameters:
+      - {name: target, type: string, required: true}
+`), "test")
+	if err == nil {
+		t.Fatal("an action with neither script nor command should be rejected")
+	}
+}
+
+func TestValidateRejectsUnknownConstraint(t *testing.T) {
+	_, err := Parse([]byte(`
+version: 1
+app: {name: ssh, executor: ssh}
+actions:
+  x:
+    command: "echo {y}"
+    parameters:
+      - {name: y, type: string, required: true, constraint: bogus}
+`), "test")
+	if err == nil {
+		t.Fatal("unknown constraint should be rejected")
+	}
+}
+
+func TestValidateRejectsUndeclaredPlaceholder(t *testing.T) {
+	_, err := Parse([]byte(`
+version: 1
+app: {name: ssh, executor: ssh}
+actions:
+  x:
+    command: "cat {path}"
+    parameters:
+      - {name: target, type: string, required: true}
+`), "test")
+	if err == nil {
+		t.Fatal("a template referencing an undeclared parameter should be rejected")
+	}
+}

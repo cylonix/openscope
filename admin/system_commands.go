@@ -24,7 +24,21 @@ type SystemCommands struct {
 	Ports     PortConfig       `yaml:"ports"`
 	Files     FileConfig       `yaml:"files"`
 	Apps      AppConfig        `yaml:"apps"`
+	Pkg       PkgConfig        `yaml:"pkg"`
 	Builds    BuildConfig      `yaml:"builds"`
+}
+
+// PkgConfig scopes the install_pkg action (running `installer -pkg` as root —
+// a powerful primitive, since a pkg's pre/postinstall scripts run as root). The
+// three gates compose and are ALL enforced when set; at least one must be set or
+// install_pkg refuses (fail closed). AllowedTeamIDs is the strongest (an agent
+// cannot forge a signing identity); RequireRootOwned stops the agent swapping or
+// renaming a pkg into place; AllowedPrefixes alone is weakest (a writable prefix
+// lets the agent drop any pkg there).
+type PkgConfig struct {
+	AllowedPrefixes  []string `yaml:"allowed_prefixes"`
+	RequireRootOwned bool     `yaml:"require_root_owned"`
+	AllowedTeamIDs   []string `yaml:"allowed_team_ids"`
 }
 
 type PackageConfig struct {
@@ -414,6 +428,17 @@ func AllowsBuildProject(cmds SystemCommands, projectPath string) bool {
 	return AllowsFilePath(cmds.Builds.AllowedProjectPrefixes, projectPath)
 }
 
+// AllowsPkgPrefix reports whether path sits under an allowed pkg prefix.
+func AllowsPkgPrefix(cmds SystemCommands, path string) bool {
+	return AllowsFilePath(cmds.Pkg.AllowedPrefixes, path)
+}
+
+// PkgScopeConfigured reports whether at least one install_pkg gate is set. With
+// none set, install_pkg must refuse (fail closed) rather than allow any pkg.
+func PkgScopeConfigured(cmds SystemCommands) bool {
+	return len(cmds.Pkg.AllowedPrefixes) > 0 || cmds.Pkg.RequireRootOwned || len(cmds.Pkg.AllowedTeamIDs) > 0
+}
+
 // RequireSudoSafe rejects binaries that are writable by the current user.
 // A user-writable binary with sudo is a privilege escalation path: an agent
 // can modify the script, then execute it through OpenScope with root.
@@ -516,6 +541,8 @@ func normalizeSystemCommands(cmds SystemCommands) SystemCommands {
 	cmds.Apps.AllowedSourcePrefixes = normalizePathList(cmds.Apps.AllowedSourcePrefixes)
 	cmds.Apps.AllowedInstallDirs = normalizePathList(cmds.Apps.AllowedInstallDirs)
 	cmds.Apps.AllowedNames = normalizeStringList(cmds.Apps.AllowedNames)
+	cmds.Pkg.AllowedPrefixes = normalizePathList(cmds.Pkg.AllowedPrefixes)
+	cmds.Pkg.AllowedTeamIDs = normalizeUpperStringList(cmds.Pkg.AllowedTeamIDs)
 	cmds.Builds.AllowedProjectPrefixes = normalizePathList(cmds.Builds.AllowedProjectPrefixes)
 	return cmds
 }

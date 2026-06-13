@@ -100,6 +100,11 @@ type SystemBlk struct {
 		AllowedInstallDirs    AddRemove `yaml:"allowed_install_dirs"`
 		AllowedNames          AddRemove `yaml:"allowed_names"`
 	} `yaml:"apps"`
+	Pkg struct {
+		AllowedPrefixes  AddRemove `yaml:"allowed_prefixes"`
+		RequireRootOwned *bool     `yaml:"require_root_owned"`
+		AllowedTeamIDs   AddRemove `yaml:"allowed_team_ids"`
+	} `yaml:"pkg"`
 	Builds struct {
 		AllowedProjectPrefixes AddRemove `yaml:"allowed_project_prefixes"`
 	} `yaml:"builds"`
@@ -197,6 +202,11 @@ func (p Proposal) EffectiveSystem(live admin.SystemCommands) admin.SystemCommand
 	out.Apps.AllowedSourcePrefixes = mergeStrings(out.Apps.AllowedSourcePrefixes, s.Apps.AllowedSourcePrefixes)
 	out.Apps.AllowedInstallDirs = mergeStrings(out.Apps.AllowedInstallDirs, s.Apps.AllowedInstallDirs)
 	out.Apps.AllowedNames = mergeStrings(out.Apps.AllowedNames, s.Apps.AllowedNames)
+	out.Pkg.AllowedPrefixes = mergeStrings(out.Pkg.AllowedPrefixes, s.Pkg.AllowedPrefixes)
+	out.Pkg.AllowedTeamIDs = mergeStrings(out.Pkg.AllowedTeamIDs, s.Pkg.AllowedTeamIDs)
+	if s.Pkg.RequireRootOwned != nil {
+		out.Pkg.RequireRootOwned = *s.Pkg.RequireRootOwned
+	}
 	out.Builds.AllowedProjectPrefixes = mergeStrings(out.Builds.AllowedProjectPrefixes, s.Builds.AllowedProjectPrefixes)
 	return out
 }
@@ -208,7 +218,16 @@ func mergeStrings(live []string, d AddRemove) []string {
 			out = append(out, v)
 		}
 	}
-	return out
+	if len(d.Remove) == 0 {
+		return out
+	}
+	kept := out[:0] // in-place filter; out is a fresh copy, so live is untouched
+	for _, v := range out {
+		if !contains(d.Remove, v) {
+			kept = append(kept, v)
+		}
+	}
+	return kept
 }
 
 func mergeInts(live []int, d AddRemoveInt) []int {
@@ -218,7 +237,16 @@ func mergeInts(live []int, d AddRemoveInt) []int {
 			out = append(out, v)
 		}
 	}
-	return out
+	if len(d.Remove) == 0 {
+		return out
+	}
+	kept := out[:0]
+	for _, v := range out {
+		if !containsInt(d.Remove, v) {
+			kept = append(kept, v)
+		}
+	}
+	return kept
 }
 
 func contains(s []string, v string) bool { return slices.Contains(s, v) }

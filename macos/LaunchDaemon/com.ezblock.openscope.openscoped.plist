@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Root LaunchDaemon (phase 4): runs openscoped as ROOT, system-wide. It owns the
+  broker — policy, audit, key custody, the ssh + system executors, and the CLI
+  socket — and delegates only Apple-event execution to the user-session agent
+  (com.ezblock.openscope.session). The postinstall installs this to
+  /Library/LaunchDaemons (root:wheel) and substitutes __SESSION_SOCKET__ with the
+  console user's session socket path.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ezblock.openscope.openscoped</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/OpenScope.app/Contents/Resources/bin/openscoped</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/com.ezblock.openscope.openscoped.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/com.ezblock.openscope.openscoped.stderr.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>OPENSCOPE_SOCKET</key>
+		<string>/var/run/openscope/openscoped.sock</string>
+		<key>OPENSCOPE_SESSION_SOCKET</key>
+		<string>__SESSION_SOCKET__</string>
+		<!-- The daemon runs as root with no $HOME; point it at the console user's
+		     config dir so it reads the same agents.yaml/state the CLI writes.
+		     Policy and audit live root-owned in the admin dir regardless. -->
+		<key>OPENSCOPE_CONFIG_DIR</key>
+		<string>__CONFIG_DIR__</string>
+		<key>TMPDIR</key>
+		<string>/private/tmp</string>
+	</dict>
+</dict>
+</plist>

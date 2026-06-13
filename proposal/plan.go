@@ -5,10 +5,12 @@ package proposal
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/policy"
 )
 
@@ -18,6 +20,9 @@ type MachineInfo struct {
 	Host          string
 	OS            string
 	DaemonRunning bool
+	// HomeDir is the home ssh resolves ~/.ssh against (the user the agent runs
+	// as); the lint uses it to flag identity files the agent could read.
+	HomeDir string
 }
 
 type Changes struct {
@@ -62,7 +67,7 @@ type Plan struct {
 }
 
 func BuildPlan(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bounds, boundsSource string, machine MachineInfo) Plan {
-	findings := Analyze(p, live, defs, b)
+	findings := Analyze(p, live, defs, b, machine.HomeDir)
 
 	plan := Plan{
 		Proposal: p, Bounds: b, BoundsSource: boundsSource, Machine: machine,
@@ -83,6 +88,74 @@ func BuildPlan(p Proposal, live LiveState, defs map[string]appdef.Definition, b 
 	plan.Changes = changes(p, live)
 	plan.BoundsTable = boundsTable(b, findings)
 	return plan
+}
+
+// ApplyBypassResults folds a live parallel-path probe (run by the CLI — plan
+// can't connect on its own) into the plan, replacing the offline MEDIUM
+// SSH-PARALLEL-PATH "unverified" finding with a definitive verdict:
+//   - any key authenticated, OR any probe was inconclusive → SSH-BYPASS (HIGH,
+//     blocking per bounds). Fail closed: the check must CONFIRM rejection, not
+//     merely fail to find a bypass.
+//   - every key conclusively rejected → SSH-NO-BYPASS (PASS).
+//
+// It then recomputes Blocked and the bounds table. The CLI calls this only after
+// actually running the probe (targets added + ~/.ssh keys present).
+func (p *Plan) ApplyBypassResults(bypass, unknown []sshexec.BypassResult) {
+	p.Findings = removeFindings(p.Findings, "SSH-PARALLEL-PATH") // had a live answer now
+
+	var f Finding
+	switch {
+	case len(bypass) > 0:
+		f = Finding{
+			RuleID: "SSH-BYPASS", Severity: SevHigh,
+			Resource: bypassKeyList(bypass),
+			Summary:  fmt.Sprintf("%d ~/.ssh key(s) authenticate to the new target(s) — the agent can ssh directly, bypassing the broker", len(bypass)),
+			Fix:      "de-authorize these keys on the host (edit its authorized_keys) or move them out of ~/.ssh, then re-run",
+		}
+	case len(unknown) > 0:
+		f = Finding{
+			RuleID: "SSH-BYPASS", Severity: SevHigh,
+			Resource: "unverified",
+			Summary:  fmt.Sprintf("%d probe(s) could not confirm your ~/.ssh key(s) are rejected (host unreachable / timed out) — fail closed: rejection must be proven before access is granted", len(unknown)),
+			Fix:      "restore reachability and re-run so the probe can confirm rejection, or pass --skip-bypass-check to override deliberately",
+		}
+	default:
+		f = Finding{
+			RuleID: "SSH-NO-BYPASS", Severity: SevPass,
+			Resource: "~/.ssh",
+			Summary:  "no ~/.ssh key reaches the new target(s) — verified live; the broker boundary holds",
+		}
+	}
+	p.Findings = append(p.Findings, f)
+	if isBlocking(p.Bounds, f) {
+		p.Blocking = append(p.Blocking, f)
+	}
+	p.Blocked = len(p.Blocking) > 0
+	sort.SliceStable(p.Findings, func(i, j int) bool { return p.Findings[i].Severity > p.Findings[j].Severity })
+	p.BoundsTable = boundsTable(p.Bounds, p.Findings)
+}
+
+func removeFindings(findings []Finding, ruleID string) []Finding {
+	out := findings[:0]
+	for _, f := range findings {
+		if f.RuleID != ruleID {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func bypassKeyList(results []sshexec.BypassResult) string {
+	seen := map[string]bool{}
+	var names []string
+	for _, r := range results {
+		base := filepath.Base(r.Key)
+		if !seen[base] {
+			seen[base] = true
+			names = append(names, base)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // isBlocking decides whether a finding hard-fails apply: either its rule ID is
@@ -177,6 +250,20 @@ func boundsTable(b Bounds, findings []Finding) []BoundsResult {
 
 	secret := count("SSH-SECRET-PATH")
 	rows = append(rows, BoundsResult{"ssh.read_path_reaches_secret", passFail(secret == 0, b.blocks("SSH-SECRET-PATH")), fmt.Sprintf("%d found", secret)})
+
+	keyReadable := count("SSH-KEY-READABLE")
+	rows = append(rows, BoundsResult{"ssh.key_readable_by_agent", passFail(keyReadable == 0, b.blocks("SSH-KEY-READABLE")), fmt.Sprintf("%d found", keyReadable)})
+
+	// Parallel path: a confirmed/unconfirmable bypass fails; a live-clear probe
+	// passes; an un-probed (offline) proposal with ~/.ssh keys shows "unverified".
+	switch {
+	case count("SSH-BYPASS") > 0:
+		rows = append(rows, BoundsResult{"ssh.no_parallel_path", passFail(false, b.blocks("SSH-BYPASS")), "a ~/.ssh key reaches the host (or could not be verified)"})
+	case count("SSH-NO-BYPASS") > 0:
+		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "pass", "verified live — no ~/.ssh key reaches the target(s)"})
+	case count("SSH-PARALLEL-PATH") > 0:
+		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "warn", "unverified offline — re-run without --skip-bypass-check"})
+	}
 
 	code := count("SYS-APP-CODEEXEC")
 	rows = append(rows, BoundsResult{"system.app_install_from_writable_source", passFail(code == 0, b.blocks("SYS-APP-CODEEXEC")), fmt.Sprintf("%d found", code)})

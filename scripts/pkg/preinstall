@@ -2,24 +2,26 @@
 # Copyright (c) EZBLOCK Inc & AUTHORS
 # SPDX-License-Identifier: BSD-3-Clause
 
-# preinstall — runs as root before OpenScope.app is installed.
-# Unloads any running openscoped LaunchAgent to avoid conflicts during upgrade.
+# preinstall — runs as root before OpenScope.app is installed. Stops any running
+# OpenScope jobs to avoid conflicts during upgrade: the root LaunchDaemon, the
+# session LaunchAgent, and the legacy per-user openscoped LaunchAgent.
 
 set -euo pipefail
 
-PLIST_LABEL="com.ezblock.openscope.openscoped"
+DAEMON_LABEL="com.ezblock.openscope.openscoped"
+SESSION_LABEL="com.ezblock.openscope.session"
+
+# Root LaunchDaemon (phase 4).
+launchctl bootout "system/$DAEMON_LABEL" 2>/dev/null || true
 
 CONSOLE_USER=$( scutil <<< "show State:/Users/ConsoleUser" \
   | awk '/Name :/ && !/loginwindow/ { print $3; exit }' )
-
-if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ]; then
-  exit 0
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+  CONSOLE_UID=$(id -u "$CONSOLE_USER")
+  launchctl bootout "gui/$CONSOLE_UID/$SESSION_LABEL" 2>/dev/null || true
+  # Legacy per-user openscoped LaunchAgent (pre-phase-4).
+  launchctl bootout "gui/$CONSOLE_UID/$DAEMON_LABEL" 2>/dev/null || true
 fi
 
-CONSOLE_UID=$(id -u "$CONSOLE_USER")
-
-# Gracefully stop the daemon if it is running
-launchctl bootout "gui/$CONSOLE_UID/$PLIST_LABEL" 2>/dev/null || true
-echo "preinstall: stopped existing openscoped (if running)"
-
+echo "preinstall: stopped existing OpenScope jobs (if running)"
 exit 0
