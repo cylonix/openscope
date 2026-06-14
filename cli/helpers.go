@@ -18,7 +18,10 @@ type loadedApp struct {
 func applyEnabledState(defs map[string]appdef.Definition, enabled appdef.EnabledFile) map[string]loadedApp {
 	loaded := make(map[string]loadedApp, len(defs))
 	for name, def := range defs {
-		isEnabled := def.Bundled || slices.Contains(enabled.Apps, name)
+		// RootApplied apps came through `sudo openscope apply` (human-reviewed,
+		// root-owned) — a stronger gate than `openscope app enable`, so they are
+		// enabled without a separate opt-in, like bundled apps.
+		isEnabled := def.Bundled || def.RootApplied || slices.Contains(enabled.Apps, name)
 		loaded[name] = loadedApp{
 			Definition: def,
 			Enabled:    isEnabled,

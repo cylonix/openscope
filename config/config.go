@@ -79,6 +79,11 @@ type Paths struct {
 	SSHTargetsFile       string
 	HTTPProfilesFile     string
 	SystemCommandsFile   string
+	// AppDefinitionsFile is the root-owned applied-verb registry — custom verb
+	// (app/action) definitions a proposal added, pinned so a same-uid agent
+	// cannot rewrite an approved command. Read by the daemon, written only by
+	// `sudo openscope apply`.
+	AppDefinitionsFile string
 
 	// Network-broker hardening (enterprise VPC deployment). The HTTP
 	// listener requires Bearer agent tokens (osk_agent_*) unless
@@ -137,6 +142,7 @@ func DefaultPaths() (Paths, error) {
 		SSHTargetsFile:       filepath.Join(adminDir, "ssh_targets.yaml"),
 		HTTPProfilesFile:     filepath.Join(adminDir, "http_profiles.yaml"),
 		SystemCommandsFile:   filepath.Join(adminDir, "system_commands.yaml"),
+		AppDefinitionsFile:   filepath.Join(adminDir, "app_definitions.yaml"),
 	}
 
 	// Socket resolution: an explicit OPENSCOPE_SOCKET wins (the root LaunchDaemon

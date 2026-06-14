@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ type bypassStub struct {
 	err    error
 }
 
-func (s bypassStub) Run(name string, args []string, stdin string) (executor.Result, error) {
+func (s bypassStub) Run(name string, args []string, stdin io.Reader) (executor.Result, error) {
 	return s.result, s.err
 }
 
@@ -113,12 +114,14 @@ func testPaths(t *testing.T) config.Paths {
 	admDir := t.TempDir()
 	return config.Paths{
 		ConfigDir:          dir,
+		AppsDir:            filepath.Join(dir, "apps.d"),
 		PoliciesFile:       filepath.Join(dir, "policies.yaml"),
 		AgentsFile:         filepath.Join(dir, "agents.yaml"),
 		AuditFile:          filepath.Join(dir, "audit.jsonl"),
 		AdminDir:           admDir,
 		SSHTargetsFile:     filepath.Join(admDir, "ssh_targets.yaml"),
 		SystemCommandsFile: filepath.Join(admDir, "system_commands.yaml"),
+		AppDefinitionsFile: filepath.Join(admDir, "app_definitions.yaml"),
 	}
 }
 

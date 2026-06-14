@@ -179,16 +179,26 @@ integrations, named targets live in
 The SSH verb set is **not fixed**. Seven curated actions ship with structured
 output (`check_host`, `host_metrics`, `service_status`, `tail_logs`,
 `read_file`, `list_dir`, `restart_service`), plus a `write_file` action — but
-any action can be defined by the app YAML. An action declares a remote command
-template whose `{param}` placeholders are substituted with shell-quoted
+any action can be defined by an app definition. An action declares a remote
+command template whose `{param}` placeholders are substituted with shell-quoted
 parameter values (injection-safe), optionally piping a parameter to the
 command's stdin; a parameter may be bound to the target's allow-lists with
-`constraint: path` or `constraint: service`. Define your own verbs in a user app
-under `~/.openscope/apps.d/<app>.yaml` with `executor: ssh` (see the bundled
-`write_file` for the pattern). OpenScope brokers what the YAML declares and a
-root-applied policy allows — `openscope plan` surfaces every non-inspection verb
-as an `SSH-WRITE` finding to confirm before apply — rather than capping the verb
-set.
+`constraint: path` or `constraint: service`.
+
+Define your own verbs the reviewed way: add them to a proposal's **`apps.add:`**
+block (`executor: ssh`, a fixed `command:` template — see
+[`docs/examples/claude-code/setup.proposal.yaml`](docs/examples/claude-code/setup.proposal.yaml)).
+`openscope plan` shows the exact command as an `SSH-WRITE` finding, and
+`sudo openscope apply` pins the definition **root-owned** in
+`/Library/Application Support/OpenScope/app_definitions.yaml`, so a same-uid
+agent cannot rewrite an approved command afterward. A generic-runner template
+(a bare `{cmd}`, `bash -c {x}`, or `eval`) is rejected as
+`SSH-SHELL-PASSTHROUGH`. On a personal install with no root daemon you may
+instead drop a manifest in `~/.openscope/apps.d/<app>.yaml` with `executor: ssh`
+(see the bundled `write_file` for the pattern); under a root daemon those
+agent-writable command verbs are ignored in favor of the pinned registry.
+OpenScope brokers what the reviewed definition declares and a root-applied
+policy allows, rather than capping the verb set.
 
 For Mail, the default `openclaw` policy is read-only and constrained to the
 `Inbox` mailbox. No attachment access is provided in the bundled app, and you can
@@ -223,6 +233,11 @@ defaults, run `openscope init --force`.
 Bundled apps (like `notes`) are always enabled and live in [`resources/bundled/`](resources/bundled/).
 
 For a worked example of a custom HTTP-backed app, see [`docs/jira_over_http.md`](docs/jira_over_http.md).
+
+To add a custom **ssh verb** (command template) under a root daemon, don't hand-edit
+`apps.d/` — carry it in a proposal's `apps.add:` block so it is reviewed and pinned
+root-owned (see the SSH verb section above and
+[`setup.proposal.yaml`](docs/examples/claude-code/setup.proposal.yaml)).
 
 ## macOS Automation Permission
 

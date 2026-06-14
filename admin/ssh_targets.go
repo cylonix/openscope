@@ -31,6 +31,12 @@ type SSHTarget struct {
 	AllowedServices     []string `yaml:"allowed_services,omitempty"`
 	AllowedPaths        []string `yaml:"allowed_paths,omitempty"`
 	AllowedPathPrefixes []string `yaml:"allowed_path_prefixes,omitempty"`
+	// AllowedUploadSources lists LOCAL (broker-host) path prefixes the daemon may
+	// read and stream to this target for an upload verb (constraint:
+	// local_source). Fail-closed: empty means no uploads. Scoped per-target so a
+	// grant for one host can't read files staged for another — and never widened
+	// to reach secrets/home (the planner blocks that).
+	AllowedUploadSources []string `yaml:"allowed_upload_sources,omitempty"`
 }
 
 func LoadSSHTargets(path string) (SSHTargets, error) {
@@ -186,6 +192,11 @@ func (t SSHTarget) Validate() error {
 			return fmt.Errorf("ssh target %q allowed path prefix %q must be absolute", t.Alias, prefix)
 		}
 	}
+	for _, prefix := range t.AllowedUploadSources {
+		if !filepath.IsAbs(prefix) {
+			return fmt.Errorf("ssh target %q allowed upload source %q must be absolute", t.Alias, prefix)
+		}
+	}
 	return nil
 }
 
@@ -221,6 +232,7 @@ func normalizeSSHTarget(target SSHTarget) SSHTarget {
 	target.AllowedServices = normalizeStringList(target.AllowedServices)
 	target.AllowedPaths = normalizePathList(target.AllowedPaths)
 	target.AllowedPathPrefixes = normalizePathList(target.AllowedPathPrefixes)
+	target.AllowedUploadSources = normalizePathList(target.AllowedUploadSources)
 	return target
 }
 
@@ -277,6 +289,22 @@ func SSHTargetAllowsPath(target SSHTarget, path string) bool {
 		return true
 	}
 	for _, prefix := range target.AllowedPathPrefixes {
+		if clean == prefix || strings.HasPrefix(clean, prefix+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// SSHTargetAllowsUploadSource reports whether a LOCAL absolute path is under one
+// of the target's allowed_upload_sources prefixes. Fail-closed: an empty list
+// allows nothing.
+func SSHTargetAllowsUploadSource(target SSHTarget, path string) bool {
+	if path == "" || len(target.AllowedUploadSources) == 0 {
+		return false
+	}
+	clean := filepath.Clean(path)
+	for _, prefix := range target.AllowedUploadSources {
 		if clean == prefix || strings.HasPrefix(clean, prefix+string(os.PathSeparator)) {
 			return true
 		}

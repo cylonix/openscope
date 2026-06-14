@@ -96,6 +96,7 @@ func minimalDefs() map[string]appdef.Definition {
 			"list_dir":        {Parameters: []appdef.Parameter{{Name: "target", PolicyKey: "target"}, {Name: "path", PolicyKey: "path"}}},
 			"restart_service": {Parameters: []appdef.Parameter{{Name: "target", PolicyKey: "target"}, {Name: "service", PolicyKey: "service"}}},
 			"service_status":  {Parameters: []appdef.Parameter{{Name: "target", PolicyKey: "target"}, {Name: "service", PolicyKey: "service"}}},
+			"write_file":      {Command: "cat > {path}", Parameters: []appdef.Parameter{{Name: "target", PolicyKey: "target"}, {Name: "path", PolicyKey: "path", Constraint: "path"}, {Name: "content"}}},
 		}},
 		"system": {App: appdef.App{Name: "system", Executor: "system", SecurityMode: "protected"}, Actions: map[string]appdef.Action{
 			"manage_apps": {Parameters: []appdef.Parameter{{Name: "name", PolicyKey: "app"}}},
@@ -211,6 +212,34 @@ policy:
 	}
 	if hasFinding(def, "SSH-KEY-READABLE") {
 		t.Error("opt-out should not block a missing identity_file")
+	}
+}
+
+func TestLintSetButAbsentKeyIsMissingNotExposed(t *testing.T) {
+	// identity_file is set but the file isn't there (not provisioned yet, or a
+	// 0700 root dir the user-vantage planner can't read). It must be reported as
+	// SSH-KEY-MISSING, not the misleading SSH-KEY-EXPOSED.
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssh_targets:
+  add:
+    - {alias: prod, host: p.example.com, user: deploy, identity_file: /var/openscope/ssh/nope/id_rsa, allowed_path_prefixes: [/var/app]}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: prod}}
+`
+	p := parse(t, src)
+	def := Analyze(p, LiveState{}, minimalDefs(), DefaultBounds(), "")
+	if !hasFinding(def, "SSH-KEY-MISSING") {
+		t.Fatalf("a set-but-absent identity_file should be SSH-KEY-MISSING, got %v", def)
+	}
+	if hasFinding(def, "SSH-KEY-EXPOSED") {
+		t.Error("a missing key file should not be reported as SSH-KEY-EXPOSED")
+	}
+	if hasFinding(def, "SSH-KEY-READABLE") {
+		t.Error("a set-but-absent identity_file should not block as readable")
 	}
 }
 

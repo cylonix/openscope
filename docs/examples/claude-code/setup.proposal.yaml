@@ -106,6 +106,35 @@ system_commands:
   builds:
     allowed_project_prefixes: {add: [/Volumes/2TB-1/src]}
 
+# --- Custom verbs (appdef.Definition; merged into the bundled namespace) ------
+# A custom ssh verb is a NAMED action with a FIXED command template and typed,
+# constrained {param} arguments — NOT a generic runner. The agent drafts it
+# here; `openscope plan` shows the EXACT command as an SSH-WRITE finding; apply
+# pins it root-owned in <AdminDir>/app_definitions.yaml so a same-uid agent
+# cannot rewrite what it runs afterward. Calling it still requires a policy
+# allow rule (see the gen_promo rule under `policy:` below).
+#
+# Rules the plan/apply enforce:
+#   • executor: ssh only (v1); declare a `command:` template, never `script:`.
+#   • every {placeholder} must be a declared parameter (shell-quoted on use, so
+#     a value can never break out of the template).
+#   • constraint: path|service binds a param to the TARGET's allow-lists (same
+#     as read_file's path / restart_service's service). Omit for a free arg.
+#   • a generic-runner shape — a bare {cmd}, `bash -c {x}`, or `eval {x}` — is
+#     BLOCKED (SSH-SHELL-PASSTHROUGH). Make the command a fixed program.
+apps:
+  add:
+    - version: 1
+      app: {name: ssh, executor: ssh}   # extend the bundled `ssh` namespace
+      actions:
+        gen_promo:
+          description: Generate a time-limited promo code on the kidfence host
+          parameters:
+            - {name: target, type: string, policy_key: target}  # which host
+            - {name: code,   type: string}                      # free, shell-quoted
+            - {name: days,   type: integer}                     # free, shell-quoted
+          command: "/opt/kidfence/bin/gen-promo --code {code} --days {days}"
+
 # --- Policy (policy.Rule; constraints keyed by policy_key) --------------------
 policy:
   add:
@@ -137,6 +166,9 @@ policy:
     - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: trusted-ds}}
     - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: openscope-demo, service: openscoped}}
     - {effect: allow, agent: claude-code, app: ssh, action: restart_service, constraints: {target: kidfence-prod, service: nginx}}
+    # Custom verb (defined under apps.add above) — scoped to one target. Without
+    # the apps.add definition this rule is a dead rule (POLICY-DEAD-RULE).
+    - {effect: allow, agent: claude-code, app: ssh, action: gen_promo, constraints: {target: kidfence-prod}}
     # Local system actions.
     - {effect: allow, agent: claude-code, app: system, action: manage_packages,  constraints: {manager: brew}}
     - {effect: allow, agent: claude-code, app: system, action: manage_packages,  constraints: {manager: pip3}}

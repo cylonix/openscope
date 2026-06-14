@@ -6,6 +6,7 @@ package sshexec
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +28,7 @@ var servicePattern = regexp.MustCompile(`^[A-Za-z0-9@_.:-]+$`)
 const brokerSSHDir = "/var/openscope/ssh"
 
 type CommandRunner interface {
-	Run(name string, args []string, stdin string) (executor.Result, error)
+	Run(name string, args []string, stdin io.Reader) (executor.Result, error)
 }
 
 type Executor struct {
@@ -167,6 +168,10 @@ func (e Executor) runCommandAction(def appdef.Definition, target admin.SSHTarget
 				return nil, err
 			}
 			subs[p.Name] = shellQuote(v)
+		case "local_source":
+			// Consumed by stdin_file streaming below — never substituted into the
+			// command, so the local path can't reach the remote command line.
+			continue
 		default:
 			if strings.ContainsRune(raw, 0) {
 				return nil, fmt.Errorf("parameter %q contains a NUL byte", p.Name)
@@ -176,7 +181,24 @@ func (e Executor) runCommandAction(def appdef.Definition, target admin.SSHTarget
 	}
 
 	command := substitute(action.Command, subs)
-	stdin := substituteRaw(action.Stdin, params)
+
+	// stdin source: either a local file streamed straight through (stdin_file,
+	// for large artifacts like a docker image tar), or a rendered string.
+	var stdin io.Reader
+	if sf := strings.TrimSpace(action.StdinFile); sf != "" {
+		src, err := requireAllowedUploadSource(target, params[sf])
+		if err != nil {
+			return nil, err
+		}
+		f, err := os.Open(src)
+		if err != nil {
+			return nil, fmt.Errorf("open upload source: %w", err)
+		}
+		defer f.Close()
+		stdin = f
+	} else if s := substituteRaw(action.Stdin, params); s != "" {
+		stdin = strings.NewReader(s)
+	}
 
 	stdout, err := e.runRemote(target, stdin, command)
 	if err != nil {
@@ -276,7 +298,7 @@ func (e Executor) readFile(target admin.SSHTarget, path string) (map[string]any,
 	// ssh's argument joining: a path under an allowed prefix can still contain
 	// shell metacharacters (e.g. "/var/log/x; rm -rf /"), and ssh would hand the
 	// joined args to the remote shell. shellQuote makes the path a literal.
-	stdout, err := e.runRemote(target, "", "cat -- "+shellQuote(path))
+	stdout, err := e.runRemote(target, nil, "cat -- "+shellQuote(path))
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +310,7 @@ func (e Executor) readFile(target admin.SSHTarget, path string) (map[string]any,
 }
 
 func (e Executor) listDir(target admin.SSHTarget, path string) (map[string]any, error) {
-	stdout, err := e.runRemote(target, "", "ls -1A -- "+shellQuote(path))
+	stdout, err := e.runRemote(target, nil, "ls -1A -- "+shellQuote(path))
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +359,7 @@ func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (stri
 	for i, a := range remoteArgs {
 		quoted[i] = shellQuote(a)
 	}
-	return e.runRemote(target, "", strings.Join(quoted, " "))
+	return e.runRemote(target, nil, strings.Join(quoted, " "))
 }
 
 // runRemote invokes ssh against target, optionally piping stdin to the remote
@@ -345,7 +367,7 @@ func (e Executor) runSSHArgs(target admin.SSHTarget, remoteArgs ...string) (stri
 // shell-safe command string (callers either build one directly or go through
 // runSSHArgs, which quotes+joins its tokens) — it becomes the one remote
 // argument ssh hands to the login shell.
-func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteCommand string) (string, error) {
+func (e Executor) runRemote(target admin.SSHTarget, stdin io.Reader, remoteCommand string) (string, error) {
 	runner := e.Runner
 	if runner == nil {
 		runner = execRunner{}
@@ -395,10 +417,10 @@ func (e Executor) runRemote(target admin.SSHTarget, stdin string, remoteCommand 
 
 type execRunner struct{}
 
-func (execRunner) Run(name string, args []string, stdin string) (executor.Result, error) {
+func (execRunner) Run(name string, args []string, stdin io.Reader) (executor.Result, error) {
 	cmd := exec.Command(name, args...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
+	if stdin != nil {
+		cmd.Stdin = stdin
 	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -481,6 +503,55 @@ func requireAllowedPath(target admin.SSHTarget, path string) (string, error) {
 		return "", fmt.Errorf("path %q is not allowed for target %q", path, target.Alias)
 	}
 	return path, nil
+}
+
+// requireAllowedUploadSource validates a LOCAL file path before the root daemon
+// reads it and streams it off-box: it must be an absolute, real (symlinks
+// resolved BEFORE the allow-list check, so a planted symlink can't escape the
+// prefix) regular file under one of the target's allowed_upload_sources.
+func requireAllowedUploadSource(target admin.SSHTarget, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("upload source is required")
+	}
+	if strings.ContainsAny(path, "\x00\n") {
+		return "", fmt.Errorf("upload source contains unsupported characters")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("upload source must be an absolute path")
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("upload source: %w", err)
+	}
+	if !uploadSourceUnderAllowList(target, resolved) {
+		return "", fmt.Errorf("upload source %q is not under allowed_upload_sources for target %q", resolved, target.Alias)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("upload source %q is not a regular file", resolved)
+	}
+	return resolved, nil
+}
+
+// uploadSourceUnderAllowList compares the resolved file path against the resolved
+// allowed prefixes — resolving BOTH sides so the symlink-escape check (the real
+// file must live under the real prefix) survives, while a prefix that crosses a
+// filesystem symlink (e.g. macOS /var → /private/var) still matches.
+func uploadSourceUnderAllowList(target admin.SSHTarget, resolved string) bool {
+	for _, prefix := range target.AllowedUploadSources {
+		rp, err := filepath.EvalSymlinks(filepath.Clean(prefix))
+		if err != nil {
+			rp = filepath.Clean(prefix) // prefix dir may not exist yet; compare literally
+		}
+		if resolved == rp || strings.HasPrefix(resolved, rp+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseLines(raw string) (int, error) {

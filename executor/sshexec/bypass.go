@@ -96,7 +96,7 @@ func ProbeBypass(target admin.SSHTarget, userKeys []string, run CommandRunner) [
 		}
 		args = append(args, dest, "true")
 
-		res, err := run.Run("ssh", args, "")
+		res, err := run.Run("ssh", args, nil)
 		out = append(out, classifyBypass(target, key, res, err))
 	}
 	return out

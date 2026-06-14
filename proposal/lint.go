@@ -76,6 +76,19 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 	allows := allowRules(p.Policy.Add)
 	readTargets := targetsForActions(allows, effTargets, readActions)
 
+	// effDefs is the namespace map as it will be after apply (live ⊕ the verbs
+	// this proposal adds), so a rule pointing at a verb the same proposal defines
+	// resolves — and SSH-WRITE and POLICY-DEAD-RULE agree on what exists instead
+	// of contradicting each other.
+	effDefs, defConflicts := p.EffectiveDefs(defs)
+	for _, msg := range defConflicts {
+		out = append(out, Finding{
+			RuleID: "APP-DEF-CONFLICT", Severity: SevHigh, Resource: "apps.add",
+			Summary: msg,
+			Fix:     "give the verb its own app name, or match the existing app's executor and security_mode",
+		})
+	}
+
 	// SSH-ROOT-USER + SSH-KEY-{READABLE,EXPOSED}: per proposed target. Live
 	// targets are audited by `openscope doctor`; the plan gates what the
 	// proposal introduces.
@@ -89,6 +102,21 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 			})
 		}
 		out = append(out, keyExposureFindings(t, homeDir, b)...)
+
+		// SSH-UPLOAD-SECRET: an allowed_upload_sources prefix is a LOCAL path the
+		// root daemon reads and streams off-box. If it reaches the home dir,
+		// ~/.ssh, a secret path, or a broad system root, it's a data-exfil channel
+		// — block it (no escape hatch; scope the source to a build/artifact dir).
+		for _, src := range t.AllowedUploadSources {
+			if reason := uploadSourceRisk(src, homeDir, b); reason != "" {
+				out = append(out, Finding{
+					RuleID: "SSH-UPLOAD-SECRET", Severity: SevHigh,
+					Resource: t.Alias + ":" + src,
+					Summary:  "upload source the root daemon reads and ships off-box " + reason + " — a data-exfil channel",
+					Fix:      "scope allowed_upload_sources to a dedicated build/artifact dir; never the home dir, ~/.ssh, or a secret/system path",
+				})
+			}
+		}
 	}
 
 	// SSH-SECRET-PATH / BROAD-PREFIX / WEBROOT / FILE-SECRET: per readable target.
@@ -140,25 +168,21 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 		})
 	}
 
-	// SSH-WRITE: any allowed ssh action that is neither read-only inspection nor
-	// the already-flagged restart_service is a mutating/custom verb. The broker
-	// runs whatever the app definition declares; the review must make a write
-	// grant visible so the operator confirms it with full awareness.
-	for _, action := range customSSHActions(allows) {
-		desc := ""
-		if def, ok := defs["ssh"]; ok {
-			if a, ok := def.Action(action); ok && a.Description != "" {
-				desc = " — " + a.Description
-			}
-		}
-		for _, alias := range targetsForActions(allows, effTargets, []string{action}) {
-			out = append(out, Finding{
-				RuleID: "SSH-WRITE", Severity: SevHigh,
-				Resource: alias + ":" + action,
-				Summary:  "non-inspection ssh action; runs an approved command that can modify " + alias + desc,
-				Fix:      "confirm the command this action runs (see its app definition) and keep its path/service constraints tight; add SSH-WRITE to bounds.blocking_rules to forbid",
-			})
-		}
+	// SSH-WRITE: any allowed ssh-EXECUTOR action that is a defined, mutating
+	// custom verb (not a curated read-only inspection verb, and not
+	// restart_service, which has its own SSH-DISRUPTIVE finding). Keyed on the
+	// resolved executor — not the literal app name "ssh" — so a custom verb under
+	// any app name is reviewed. Undefined actions are left to POLICY-DEAD-RULE; a
+	// rule can't be both "runs a command that modifies the host" and "never
+	// matches". The exact command is shown so the operator confirms what they
+	// authorize in this same view.
+	for _, wr := range customSSHWrites(allows, effTargets, effDefs) {
+		out = append(out, Finding{
+			RuleID: "SSH-WRITE", Severity: SevHigh,
+			Resource: wr.alias + ":" + wr.action,
+			Summary:  "non-inspection ssh action; runs an approved command that can modify " + wr.alias + wr.desc,
+			Fix:      "confirm the command this action runs" + wr.cmdHint + " and keep its path/service constraints tight; add SSH-WRITE to bounds.blocking_rules to forbid",
+		})
 	}
 
 	// SSH-PARALLEL-PATH: the proposal adds ssh target(s) AND the agent's user has
@@ -282,7 +306,8 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 		}
 	}
 
-	out = append(out, deadRuleFindings(p, targetByAlias, defs)...)
+	out = append(out, passthroughFindings(p)...)
+	out = append(out, deadRuleFindings(p, targetByAlias, effDefs)...)
 	out = append(out, passFindings(p, effSystem)...)
 
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Severity > out[j].Severity })
@@ -398,7 +423,8 @@ func sshTargetSemEqual(a, b admin.SSHTarget) bool {
 		a.IdentityFile == b.IdentityFile && a.ProxyJump == b.ProxyJump &&
 		strings.Join(a.AllowedServices, ",") == strings.Join(b.AllowedServices, ",") &&
 		strings.Join(a.AllowedPaths, ",") == strings.Join(b.AllowedPaths, ",") &&
-		strings.Join(a.AllowedPathPrefixes, ",") == strings.Join(b.AllowedPathPrefixes, ",")
+		strings.Join(a.AllowedPathPrefixes, ",") == strings.Join(b.AllowedPathPrefixes, ",") &&
+		strings.Join(a.AllowedUploadSources, ",") == strings.Join(b.AllowedUploadSources, ",")
 }
 
 func passFindings(p Proposal, sys admin.SystemCommands) []Finding {
@@ -429,9 +455,9 @@ func passFindings(p Proposal, sys admin.SystemCommands) []Finding {
 // keyExposureFindings audits a proposed target's SSH identity file. A key the
 // agent's own (non-root) user can read voids the entire brokering premise: the
 // agent can ssh directly with that key and bypass every policy rule. Those
-// conditions become a blocking SSH-KEY-READABLE (HIGH). Weaker hygiene issues
-// the file mode alone does not expose (loose containing dir, a missing file we
-// cannot verify) stay advisory as SSH-KEY-EXPOSED (WARN).
+// conditions become a blocking SSH-KEY-READABLE (HIGH). Weaker issues stay
+// advisory (WARN): a loose containing dir is SSH-KEY-EXPOSED; a key not yet
+// provisioned (or unverifiable from the user-vantage planner) is SSH-KEY-MISSING.
 //
 // A missing identity_file means ssh falls back to ~/.ssh, which is itself
 // agent-readable; whether that blocks is governed by bounds.require_identity_file
@@ -467,7 +493,16 @@ func keyExposureFindings(t admin.SSHTarget, homeDir string, b Bounds) []Finding 
 			})
 		case sshexec.KeyUnderDotSSH, sshexec.KeyModeTooOpen, sshexec.KeyNotRootOwned:
 			readable = append(readable, w.Message)
-		default: // KeyLooseDir, KeyMissing — advisory hygiene
+		case sshexec.KeyMissing:
+			// Not an exposure — the key just isn't provisioned yet (or the
+			// planner, running as the user, can't see inside a 0700 root dir).
+			// Use a rule ID that matches the "does not exist" message.
+			out = append(out, Finding{
+				RuleID: "SSH-KEY-MISSING", Severity: SevWarn, Resource: t.Alias,
+				Summary: w.Message,
+				Fix:     "provision " + t.IdentityFile + " (root-owned, mode 0600) before this target is used",
+			})
+		default: // KeyLooseDir — advisory hygiene
 			out = append(out, Finding{
 				RuleID: "SSH-KEY-EXPOSED", Severity: SevWarn, Resource: t.Alias,
 				Summary: w.Message, Fix: readableFix,
@@ -537,26 +572,137 @@ func anyOf(items []string) string {
 	return "any of [" + strings.Join(items, ", ") + "]"
 }
 
-// customSSHActions returns the sorted, distinct ssh actions in the allow rules
-// that are neither curated read-only inspection verbs nor restart_service
-// (which has its own SSH-DISRUPTIVE finding) — i.e. the mutating/custom verbs.
-func customSSHActions(allows []policy.Rule) []string {
-	set := map[string]struct{}{}
+// sshWrite is one (target, custom-verb) pair SSH-WRITE surfaces, with the verb's
+// description and the exact command it runs for the operator to confirm.
+type sshWrite struct{ alias, action, desc, cmdHint string }
+
+// customSSHWrites returns the (target, action) pairs an allow rule grants on a
+// defined ssh-executor verb that is mutating (not a curated read-only inspection
+// verb, not restart_service). It resolves the executor and the command from the
+// effective defs, so it covers custom verbs under any app name and skips
+// undefined actions (POLICY-DEAD-RULE owns those).
+func customSSHWrites(allows []policy.Rule, effTargets []admin.SSHTarget, defs map[string]appdef.Definition) []sshWrite {
+	seen := map[string]struct{}{}
+	var out []sshWrite
 	for _, r := range allows {
-		if r.App != "ssh" || r.Action == "restart_service" {
+		def, ok := defs[r.App]
+		if !ok || def.App.Executor != "ssh" {
 			continue
 		}
-		if slices.Contains(inspectionActions, r.Action) {
+		action, ok := def.Action(r.Action)
+		if !ok {
+			continue // undefined verb → POLICY-DEAD-RULE, not SSH-WRITE
+		}
+		if r.Action == "restart_service" || slices.Contains(inspectionActions, r.Action) {
 			continue
 		}
-		set[r.Action] = struct{}{}
+		desc := ""
+		if action.Description != "" {
+			desc = " — " + action.Description
+		}
+		cmdHint := " (see its app definition)"
+		if c := strings.TrimSpace(action.Command); c != "" {
+			cmdHint = "; it runs: " + c
+		}
+		for _, alias := range targetsForRule(r, effTargets) {
+			key := alias + "\x00" + r.Action
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, sshWrite{alias: alias, action: r.Action, desc: desc, cmdHint: cmdHint})
+		}
 	}
-	out := make([]string, 0, len(set))
-	for a := range set {
-		out = append(out, a)
-	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].alias != out[j].alias {
+			return out[i].alias < out[j].alias
+		}
+		return out[i].action < out[j].action
+	})
 	return out
+}
+
+// targetsForRule returns the target aliases a single allow rule reaches: its
+// `target` constraint, or every effective target when unconstrained.
+func targetsForRule(r policy.Rule, effTargets []admin.SSHTarget) []string {
+	if alias := r.Constraints["target"]; alias != "" {
+		return []string{alias}
+	}
+	out := make([]string, 0, len(effTargets))
+	for _, t := range effTargets {
+		out = append(out, t.Alias)
+	}
+	return out
+}
+
+// passthroughFindings flags a proposal-added verb whose command template is a
+// generic runner rather than a fixed program with typed arguments — a bare
+// parameter as the whole command, an `eval`, or a shell `-c` whose body is a
+// parameter. This is what keeps custom verbs from degrading into "run arbitrary
+// remote command"; it is blocking (see isBlocking / DefaultBoundsYAML).
+func passthroughFindings(p Proposal) []Finding {
+	var out []Finding
+	for _, d := range p.Apps.Add {
+		names := make([]string, 0, len(d.Actions))
+		for name := range d.Actions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if reason := shellPassthrough(d.Actions[name].Command); reason != "" {
+				out = append(out, Finding{
+					RuleID: "SSH-SHELL-PASSTHROUGH", Severity: SevHigh,
+					Resource: d.App.Name + "·" + name,
+					Summary:  "command template is a generic runner (" + reason + ") — that turns a typed verb into arbitrary remote execution",
+					Fix:      "make the command a fixed program with typed {param} arguments; never pass a parameter as the command, an eval, or a shell -c body",
+				})
+			}
+		}
+	}
+	return out
+}
+
+var shellInterpreters = []string{"sh", "bash", "zsh", "dash", "ksh", "ash"}
+
+// shellPassthrough returns a non-empty reason when cmd is a generic-runner shape.
+func shellPassthrough(cmd string) string {
+	c := strings.TrimSpace(cmd)
+	if c == "" {
+		return ""
+	}
+	fields := strings.Fields(c)
+	if len(fields) == 1 && isBarePlaceholder(fields[0]) {
+		return "the whole command is a parameter"
+	}
+	if fields[0] == "eval" {
+		return "eval of a parameter"
+	}
+	base := filepath.Base(fields[0])
+	if slices.Contains(shellInterpreters, base) {
+		for i := 1; i < len(fields); i++ {
+			f := fields[i]
+			// -c / -lc / -ec etc. — the next field is the script body.
+			if strings.HasPrefix(f, "-") && strings.ContainsRune(f, 'c') {
+				if i+1 < len(fields) && containsPlaceholder(fields[i+1]) {
+					return base + " -c with a parameter as the script body"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func isBarePlaceholder(s string) bool {
+	return strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") &&
+		len(s) > 2 && !strings.ContainsAny(s[1:len(s)-1], "{}")
+}
+
+func containsPlaceholder(s string) bool {
+	i := strings.IndexByte(s, '{')
+	if i < 0 {
+		return false
+	}
+	return strings.IndexByte(s[i:], '}') > 1
 }
 
 // targetsForActions returns the set of target aliases an allow rule grants the
@@ -585,6 +731,33 @@ func targetsForActions(allows []policy.Rule, effTargets []admin.SSHTarget, actio
 	}
 	sort.Strings(out)
 	return out
+}
+
+// uploadSourceRisk returns a non-empty reason when a LOCAL upload-source prefix
+// is dangerous for the root daemon to read and ship off-box: it reaches a secret
+// path, the home dir / ~/.ssh, or a broad system root.
+func uploadSourceRisk(src, homeDir string, b Bounds) string {
+	s := filepath.Clean(src)
+	if hit, sec := reachesSecret(s, b.SSH.SecretAbsolutePaths); hit {
+		return "reaches secrets at " + sec
+	}
+	if homeDir != "" {
+		h := filepath.Clean(homeDir)
+		ssh := filepath.Join(h, ".ssh")
+		// equal/ancestor/descendant of either the home dir or ~/.ssh
+		if s == h || isUnder(h, s) {
+			return "is or contains the home directory"
+		}
+		if s == ssh || isUnder(ssh, s) || isUnder(s, ssh) {
+			return "reaches ~/.ssh"
+		}
+	}
+	for _, broad := range []string{"/", "/etc", "/Users", "/home", "/var", "/private", "/root"} {
+		if s == filepath.Clean(broad) {
+			return "is a broad system root"
+		}
+	}
+	return ""
 }
 
 // reachesSecret reports whether a granted abs path/prefix overlaps any secret

@@ -46,6 +46,11 @@ const DefaultBoundsYAML = `# OpenScope bounds — the root-owned envelope no pro
 version: 1
 
 # Findings with these rule IDs hard-fail apply (override only by editing here).
+# Note: SSH-SHELL-PASSTHROUGH (a custom verb whose command is a generic runner),
+# APP-DEF-CONFLICT (a verb definition that collides with an existing app), and
+# SSH-UPLOAD-SECRET (an upload source that reaches home/~/.ssh/secrets) also
+# hard-fail apply unconditionally — they protect the verb/upload mechanism itself
+# and cannot be disabled here.
 blocking_rules:
   - SYS-APP-CODEEXEC
   - SYS-PKG-CODEEXEC

@@ -34,6 +34,7 @@ type Changes struct {
 	NewServices       int
 	NewProcNames      int
 	NewPorts          int
+	VerbsAdded        int
 	PolicyAllowNew    int
 	PolicyDenyNew     int
 }
@@ -165,6 +166,14 @@ func isBlocking(b Bounds, f Finding) bool {
 	if b.blocks(f.RuleID) {
 		return true
 	}
+	// These guard the integrity of the verb mechanism and block unconditionally
+	// — independent of bounds, since a legacy bounds.yaml predates them and there
+	// is deliberately no escape hatch for a generic-runner verb (it would defeat
+	// the typed-broker model) or a verb definition that collides with an app.
+	switch f.RuleID {
+	case "SSH-SHELL-PASSTHROUGH", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET":
+		return true
+	}
 	if f.RuleID == "SSH-ROOT-USER" && b.SSH.RootUser == "deny" {
 		return true
 	}
@@ -187,6 +196,35 @@ func capabilities(p Proposal) []Capability {
 		return caps[i].Action < caps[j].Action
 	})
 	return caps
+}
+
+// verbRows returns the custom verbs a proposal adds as [app·action, command,
+// params] rows, sorted, for the plan's "custom verbs" section. The command is
+// the exact template the operator is authorizing; params show each name and its
+// constraint (path/service) so the scope is visible alongside the command.
+func verbRows(p Proposal) [][]string {
+	var rows [][]string
+	for _, d := range p.Apps.Add {
+		names := make([]string, 0, len(d.Actions))
+		for name := range d.Actions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			a := d.Actions[name]
+			parts := make([]string, 0, len(a.Parameters))
+			for _, pm := range a.Parameters {
+				s := pm.Name
+				if pm.Constraint != "" {
+					s += ":" + pm.Constraint
+				}
+				parts = append(parts, s)
+			}
+			rows = append(rows, []string{d.App.Name + "·" + name, a.Command, strings.Join(parts, ", ")})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
+	return rows
 }
 
 func scopeString(r policy.Rule) string {
@@ -215,6 +253,7 @@ func changes(p Proposal, live LiveState) Changes {
 		NewServices:       len(p.SystemCommands.Services.Allowed.Add),
 		NewProcNames:      len(p.SystemCommands.Processes.AllowedNames.Add),
 		NewPorts:          len(p.SystemCommands.Ports.Allowed.Add),
+		VerbsAdded:        len(p.Apps.Add),
 	}
 	liveKeys := map[string]struct{}{}
 	for _, r := range live.Policy.Rules {

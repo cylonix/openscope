@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,7 +23,11 @@ type Definition struct {
 	Actions      map[string]Action `yaml:"actions"`
 	Source       string            `yaml:"-"`
 	Bundled      bool              `yaml:"-"`
-	ManifestPath string            `yaml:"-"`
+	// RootApplied marks a definition that came from the root-owned applied-verb
+	// registry (<AdminDir>/app_definitions.yaml) — a human-reviewed, pinned
+	// command template a same-uid agent cannot rewrite. Set by LoadAppliedFile.
+	RootApplied  bool   `yaml:"-"`
+	ManifestPath string `yaml:"-"`
 }
 
 type App struct {
@@ -47,6 +52,14 @@ type Action struct {
 	Script  string `yaml:"script"`
 	Command string `yaml:"command"`
 	Stdin   string `yaml:"stdin"`
+	// StdinFile names a parameter (constraint: local_source) whose VALUE is a
+	// local file path; the executor opens that file and streams it to the remote
+	// Command's stdin without buffering — the way a large artifact (e.g. a docker
+	// image tar piped to `docker load`) moves without hitting ARG_MAX or the
+	// broker's small-JSON request model. Mutually exclusive with Stdin; requires
+	// Command. The named local_source parameter is consumed by the stream, never
+	// substituted into the command, so the local path can't leak into it.
+	StdinFile string `yaml:"stdin_file"`
 }
 
 type Parameter struct {
@@ -167,9 +180,9 @@ func (d *Definition) Validate() error {
 				return fmt.Errorf("action %q parameter %q missing type", name, param.Name)
 			}
 			switch param.Constraint {
-			case "", "path", "service":
+			case "", "path", "service", "local_source":
 			default:
-				return fmt.Errorf("action %q parameter %q has unknown constraint %q (want path|service)", name, param.Name, param.Constraint)
+				return fmt.Errorf("action %q parameter %q has unknown constraint %q (want path|service|local_source)", name, param.Name, param.Constraint)
 			}
 			declared[param.Name] = struct{}{}
 		}
@@ -182,9 +195,62 @@ func (d *Definition) Validate() error {
 				}
 			}
 		}
+		if err := validateStdinFile(name, action); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// validateStdinFile enforces the rules for streaming a local file to stdin: the
+// stdin_file/local_source pairing is consistent and the local path can never
+// leak into the remote command line.
+func validateStdinFile(name string, action Action) error {
+	// A local_source parameter is only meaningful as the stdin_file stream
+	// source, and must never be substituted into the command (which would put a
+	// local path on the remote command line).
+	for _, p := range action.Parameters {
+		if p.Constraint != "local_source" {
+			continue
+		}
+		if strings.TrimSpace(action.StdinFile) != p.Name {
+			return fmt.Errorf("action %q: parameter %q (constraint: local_source) must be consumed by stdin_file", name, p.Name)
+		}
+		for _, tmpl := range []string{action.Command, action.Stdin} {
+			if slices.Contains(referencedParams(tmpl), p.Name) {
+				return fmt.Errorf("action %q: local_source parameter %q must not appear in the command/stdin template", name, p.Name)
+			}
+		}
+	}
+
+	sf := strings.TrimSpace(action.StdinFile)
+	if sf == "" {
+		return nil
+	}
+	if strings.TrimSpace(action.Stdin) != "" {
+		return fmt.Errorf("action %q: stdin_file and stdin are mutually exclusive", name)
+	}
+	if strings.TrimSpace(action.Command) == "" {
+		return fmt.Errorf("action %q: stdin_file requires a command to pipe into", name)
+	}
+	p, ok := paramByName(action.Parameters, sf)
+	if !ok {
+		return fmt.Errorf("action %q: stdin_file names undeclared parameter %q", name, sf)
+	}
+	if p.Constraint != "local_source" {
+		return fmt.Errorf("action %q: stdin_file parameter %q must have constraint: local_source", name, sf)
+	}
+	return nil
+}
+
+func paramByName(params []Parameter, name string) (Parameter, bool) {
+	for _, p := range params {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Parameter{}, false
 }
 
 var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)

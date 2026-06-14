@@ -312,6 +312,7 @@ func runApply(paths config.Paths, args []string) int {
 		"proposal":     p.Metadata.Name,
 		"proposal_sha": p.SHA256,
 		"ssh_targets":  len(p.SSHTargets.Add),
+		"verbs":        len(p.Apps.Add),
 		"policy_rules": len(p.Policy.Add),
 		"acknowledged": len(plan.Acknowledge),
 	})
@@ -340,14 +341,14 @@ func confirmAcknowledgements(findings []proposal.Finding) error {
 }
 
 // applyProposal writes the proposal through the existing validated admin code
-// paths. It is transactional: the three mutated files are snapshotted up front
+// paths. It is transactional: the four mutated files are snapshotted up front
 // and restored on any error, so a mid-sequence failure never leaves a
 // partially-applied, inconsistent config. Factored out (no euid check) so tests
 // can exercise it with temp paths. liveSystem is the same snapshot the plan/
 // bounds gate evaluated, so the effective config written matches what was
 // reviewed (no TOCTOU against a second live read).
 func applyProposal(paths config.Paths, p proposal.Proposal, liveSystem admin.SystemCommands) error {
-	snap := snapshotFiles(paths.SSHTargetsFile, paths.SystemCommandsFile, paths.PoliciesFile)
+	snap := snapshotFiles(paths.SSHTargetsFile, paths.SystemCommandsFile, paths.PoliciesFile, paths.AppDefinitionsFile)
 
 	if err := applyMutations(paths, p, liveSystem); err != nil {
 		restoreFiles(snap)
@@ -409,6 +410,12 @@ func applyMutations(paths config.Paths, p proposal.Proposal, liveSystem admin.Sy
 		return fmt.Errorf("write system commands: %w", err)
 	}
 
+	// Verb definitions land in the root-owned registry BEFORE the policy rules,
+	// so a freshly-granted rule already has the verb it points at.
+	if err := applyAppDefinitions(paths, p); err != nil {
+		return err
+	}
+
 	for _, r := range p.Policy.Remove {
 		if _, _, err := policy.RemoveRules(paths, func(x policy.Rule) bool { return ruleEqual(x, r) }); err != nil {
 			return fmt.Errorf("remove policy rule: %w", err)
@@ -418,6 +425,37 @@ func applyMutations(paths config.Paths, p proposal.Proposal, liveSystem admin.Sy
 		if _, _, err := policy.AddRule(paths, r); err != nil {
 			return fmt.Errorf("add policy rule: %w", err)
 		}
+	}
+	return nil
+}
+
+// applyAppDefinitions folds the proposal's verb deltas into the root-owned
+// applied-verb registry: removals first, then adds (action-level merge). It then
+// re-assembles the full namespace to prove the daemon will be able to load it
+// with the new registry — a failure here rolls back the whole apply, so a
+// corrupt registry can never be committed.
+func applyAppDefinitions(paths config.Paths, p proposal.Proposal) error {
+	if len(p.Apps.Add) == 0 && len(p.Apps.Remove) == 0 {
+		return nil
+	}
+	list, err := appdef.LoadAppliedFile(paths.AppDefinitionsFile)
+	if err != nil {
+		return fmt.Errorf("load applied app definitions: %w", err)
+	}
+	for _, r := range p.Apps.Remove {
+		list = appdef.RemoveDefinitionAction(list, r.App, r.Action)
+	}
+	for _, d := range p.Apps.Add {
+		list, err = appdef.MergeDefinitionList(list, d)
+		if err != nil {
+			return fmt.Errorf("merge verb %q: %w", d.App.Name, err)
+		}
+	}
+	if err := appdef.SaveAppliedFile(paths.AppDefinitionsFile, list); err != nil {
+		return fmt.Errorf("write applied app definitions: %w", err)
+	}
+	if _, err := loadAllDefinitions(paths); err != nil {
+		return fmt.Errorf("applied app definitions would not load: %w", err)
 	}
 	return nil
 }
@@ -432,7 +470,8 @@ func sshTargetEqual(a, b admin.SSHTarget) bool {
 		a.IdentityFile == b.IdentityFile && a.ProxyJump == b.ProxyJump &&
 		strings.Join(a.AllowedServices, ",") == strings.Join(b.AllowedServices, ",") &&
 		strings.Join(a.AllowedPaths, ",") == strings.Join(b.AllowedPaths, ",") &&
-		strings.Join(a.AllowedPathPrefixes, ",") == strings.Join(b.AllowedPathPrefixes, ",")
+		strings.Join(a.AllowedPathPrefixes, ",") == strings.Join(b.AllowedPathPrefixes, ",") &&
+		strings.Join(a.AllowedUploadSources, ",") == strings.Join(b.AllowedUploadSources, ",")
 }
 
 type fileSnapshot struct {
@@ -492,10 +531,20 @@ func auditApply(paths config.Paths, p proposal.Proposal) {
 			ProposalSHA256: p.SHA256, ProposalName: p.Metadata.Name, AuthoredBy: authoredBy,
 		})
 	}
+	for _, d := range p.Apps.Add {
+		for action := range d.Actions {
+			_ = audit.Append(paths.AuditFile, audit.Event{
+				Timestamp: now, Agent: authoredBy, App: "admin", Action: "apply.verb",
+				Params:   map[string]string{"app": d.App.Name, "action": action, "command": d.Actions[action].Command},
+				Decision: "allow", Result: "admin_apply",
+				ProposalSHA256: p.SHA256, ProposalName: p.Metadata.Name, AuthoredBy: authoredBy,
+			})
+		}
+	}
 	_ = audit.Append(paths.AuditFile, audit.Event{
 		Timestamp: now, Agent: authoredBy, App: "admin", Action: "apply",
 		Decision: "allow", Result: "admin_apply",
-		Reason:         fmt.Sprintf("%d ssh targets, %d policy rules", len(p.SSHTargets.Add), len(p.Policy.Add)),
+		Reason:         fmt.Sprintf("%d ssh targets, %d verbs, %d policy rules", len(p.SSHTargets.Add), len(p.Apps.Add), len(p.Policy.Add)),
 		ProposalSHA256: p.SHA256, ProposalName: p.Metadata.Name, AuthoredBy: authoredBy,
 	})
 }
@@ -513,6 +562,7 @@ func writeAttestation(paths config.Paths, p proposal.Proposal) error {
 		"agents_sha256: " + fileSHA(paths.AgentsFile),
 		"ssh_targets_sha256: " + fileSHA(paths.SSHTargetsFile),
 		"system_commands_sha256: " + fileSHA(paths.SystemCommandsFile),
+		"app_definitions_sha256: " + fileSHA(paths.AppDefinitionsFile),
 	}
 	body := strings.Join(lines, "\n") + "\n"
 	if err := os.MkdirAll(paths.AdminDir, 0o755); err != nil {

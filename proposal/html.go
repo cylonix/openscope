@@ -60,9 +60,20 @@ func RenderHTML(p Plan) string {
 		{plain("ssh targets"), plain(fmt.Sprintf("+%d add, -%d remove", c.SSHTargetsAdded, c.SSHTargetsRemoved))},
 		{plain("system allow-lists"), plain(fmt.Sprintf("%s — %d mgrs · %d pkgs · %d svcs · %d procs · %d ports",
 			sysCell, c.NewManagers, c.NewPackages, c.NewServices, c.NewProcNames, c.NewPorts))},
+		{plain("custom verbs"), plain(fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded))},
 		{plain("policy rules"), plain(fmt.Sprintf("+%d allow, +%d deny (new vs live)", c.PolicyAllowNew, c.PolicyDenyNew))},
 	})
 	b.WriteString(`<p class="note">This proposal only ADDS access; nothing is narrowed or removed.</p>`)
+
+	// Custom verbs: the exact command templates this proposal pins root-owned.
+	if vrows := verbRows(pr); len(vrows) > 0 {
+		b.WriteString(`<h2>Custom verbs added <span class="muted">(exact command templates, pinned root-owned at apply)</span></h2>`)
+		vcells := make([][]cell, 0, len(vrows))
+		for _, r := range vrows {
+			vcells = append(vcells, []cell{mono(r[0]), mono(r[1]), plain(r[2])})
+		}
+		htmlTable(&b, []string{"App · Action", "Command", "Params"}, vcells)
+	}
 
 	// Capabilities.
 	b.WriteString(`<h2>What it will be able to do <span class="muted">(from typed fields)</span></h2>`)

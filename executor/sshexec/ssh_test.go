@@ -5,6 +5,7 @@ package sshexec
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,10 +25,13 @@ type stubRunner struct {
 	err    error
 }
 
-func (s *stubRunner) Run(name string, args []string, stdin string) (executor.Result, error) {
+func (s *stubRunner) Run(name string, args []string, stdin io.Reader) (executor.Result, error) {
 	s.name = name
 	s.args = append([]string(nil), args...)
-	s.stdin = stdin
+	if stdin != nil {
+		b, _ := io.ReadAll(stdin)
+		s.stdin = string(b)
+	}
 	return s.result, s.err
 }
 
@@ -78,6 +82,81 @@ func TestExecutorTailLogsBuildsFixedSSHCommand(t *testing.T) {
 	}
 	if payload["service"] != "web" {
 		t.Fatalf("expected payload to include service, got %#v", payload)
+	}
+}
+
+// uploadDef builds a load_test_build-style verb: a local file (constraint:
+// local_source) streamed to a remote command's stdin.
+func uploadDef() appdef.Definition {
+	return appdef.Definition{
+		Version: 1,
+		App:     appdef.App{Name: "ssh", Executor: "ssh", SecurityMode: "protected"},
+		Actions: map[string]appdef.Action{
+			"load_test_build": {
+				StdinFile: "tar",
+				Command:   "docker load",
+				Parameters: []appdef.Parameter{
+					{Name: "target", Type: "string", PolicyKey: "target"},
+					{Name: "tar", Type: "string", Constraint: "local_source"},
+				},
+			},
+		},
+	}
+}
+
+func TestExecutorStreamsLocalFileToStdin(t *testing.T) {
+	srcDir := t.TempDir()
+	tarPath := filepath.Join(srcDir, "img.tar")
+	if err := os.WriteFile(tarPath, []byte("IMAGE-TAR-BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths := config.Paths{SSHTargetsFile: filepath.Join(t.TempDir(), "ssh_targets.yaml")}
+	if err := admin.SaveSSHTargets(paths.SSHTargetsFile, admin.SSHTargets{
+		Version: 1,
+		Targets: []admin.SSHTarget{{
+			Alias: "test", Host: "h", User: "deploy",
+			AllowedUploadSources: []string{srcDir},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &stubRunner{result: executor.Result{Stdout: "Loaded image: x\n"}}
+	exec := Executor{Paths: paths, Runner: runner}
+
+	if _, err := exec.Run(uploadDef(), "load_test_build", map[string]string{
+		"target": "test", "tar": tarPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runner.stdin != "IMAGE-TAR-BYTES" {
+		t.Fatalf("expected the local file streamed to stdin, got %q", runner.stdin)
+	}
+	if got := runner.args[len(runner.args)-1]; got != "docker load" {
+		t.Fatalf("remote command = %q", got)
+	}
+}
+
+func TestExecutorRefusesUploadSourceOutsideAllowList(t *testing.T) {
+	srcDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "evil.tar") // a DIFFERENT temp dir
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths := config.Paths{SSHTargetsFile: filepath.Join(t.TempDir(), "ssh_targets.yaml")}
+	if err := admin.SaveSSHTargets(paths.SSHTargetsFile, admin.SSHTargets{
+		Version: 1,
+		Targets: []admin.SSHTarget{{
+			Alias: "test", Host: "h", User: "deploy",
+			AllowedUploadSources: []string{srcDir},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec := Executor{Paths: paths, Runner: &stubRunner{}}
+	if _, err := exec.Run(uploadDef(), "load_test_build", map[string]string{
+		"target": "test", "tar": outside,
+	}); err == nil {
+		t.Fatal("expected refusal for an upload source outside allowed_upload_sources")
 	}
 }
 

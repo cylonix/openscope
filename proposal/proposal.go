@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/openscope/openscope/admin"
+	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/policy"
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,7 @@ type Proposal struct {
 	Metadata       Metadata      `yaml:"metadata"`
 	SSHTargets     SSHTargetsBlk `yaml:"ssh_targets"`
 	SystemCommands SystemBlk     `yaml:"system_commands"`
+	Apps           AppsBlk       `yaml:"apps"`
 	Policy         PolicyBlk     `yaml:"policy"`
 
 	// Derived, never serialized.
@@ -115,6 +117,60 @@ type PolicyBlk struct {
 	Remove []policy.Rule `yaml:"remove"`
 }
 
+// AppsBlk carries custom verb (app/action) definitions a proposal contributes
+// to the root-owned applied-verb registry. Each Add is a (possibly partial)
+// app definition whose `command:` templates merge onto the bundled namespace
+// (e.g. add `gen_promo` to the `ssh` app). Remove drops a whole app (Action
+// "") or a single action. v1 supports executor: ssh only.
+type AppsBlk struct {
+	Add    []appdef.Definition `yaml:"add"`
+	Remove []AppRef            `yaml:"remove"`
+}
+
+type AppRef struct {
+	App    string `yaml:"app"`
+	Action string `yaml:"action"`
+}
+
+// EffectiveDefs returns the namespace map as it will be after apply: loaded
+// definitions with the proposal's verbs merged on top and its removals applied.
+// Any merge conflict (e.g. an Add whose executor clashes with a bundled app of
+// the same name) is returned as a human-readable message rather than mutating
+// that namespace, so the lint can surface it instead of silently dropping it.
+func (p Proposal) EffectiveDefs(loaded map[string]appdef.Definition) (map[string]appdef.Definition, []string) {
+	out := make(map[string]appdef.Definition, len(loaded)+len(p.Apps.Add))
+	for k, v := range loaded {
+		out[k] = v
+	}
+	var conflicts []string
+	for _, d := range p.Apps.Add {
+		if err := appdef.MergeInto(out, d); err != nil {
+			conflicts = append(conflicts, err.Error())
+		}
+	}
+	for _, r := range p.Apps.Remove {
+		def, ok := out[r.App]
+		if !ok {
+			continue
+		}
+		if r.Action == "" {
+			delete(out, r.App)
+			continue
+		}
+		if _, has := def.Actions[r.Action]; has {
+			m := make(map[string]appdef.Action, len(def.Actions))
+			for k, v := range def.Actions {
+				if k != r.Action {
+					m[k] = v
+				}
+			}
+			def.Actions = m
+			out[r.App] = def
+		}
+	}
+	return out, conflicts
+}
+
 // Load reads, hashes, parses, and validates a proposal file.
 func Load(path string) (Proposal, error) {
 	data, err := os.ReadFile(path)
@@ -148,6 +204,33 @@ func (p Proposal) Validate() error {
 	for _, t := range p.SSHTargets.Add {
 		if err := t.Validate(); err != nil {
 			return fmt.Errorf("ssh_targets.add: %w", err)
+		}
+	}
+	for i := range p.Apps.Add {
+		// Validate the definition itself (placeholder→param checks, constraints),
+		// then enforce the proposal-specific rules: a proposal can only ship a
+		// command-template ssh verb — never a `script:` action (it cannot carry an
+		// embedded script artifact) and, in v1, never another executor (those lack
+		// a review finding like SSH-WRITE).
+		if err := p.Apps.Add[i].Validate(); err != nil {
+			return fmt.Errorf("apps.add[%d]: %w", i, err)
+		}
+		d := p.Apps.Add[i]
+		if d.App.Executor != "ssh" {
+			return fmt.Errorf("apps.add[%d] (%s): only executor: ssh custom verbs are supported, got %q", i, d.App.Name, d.App.Executor)
+		}
+		for name, a := range d.Actions {
+			if strings.TrimSpace(a.Script) != "" {
+				return fmt.Errorf("apps.add[%d] (%s): action %q must use a command: template, not script:", i, d.App.Name, name)
+			}
+			if strings.TrimSpace(a.Command) == "" {
+				return fmt.Errorf("apps.add[%d] (%s): action %q must declare a command:", i, d.App.Name, name)
+			}
+		}
+	}
+	for i, r := range p.Apps.Remove {
+		if strings.TrimSpace(r.App) == "" {
+			return fmt.Errorf("apps.remove[%d]: app is required", i)
 		}
 	}
 	for i, r := range p.Policy.Add {

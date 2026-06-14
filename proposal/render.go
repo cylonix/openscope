@@ -47,9 +47,18 @@ func RenderText(p Plan) string {
 			{"ssh targets", fmt.Sprintf("+%d add, -%d remove", c.SSHTargetsAdded, c.SSHTargetsRemoved)},
 			{"system allow-lists", fmt.Sprintf("%s — %d mgrs · %d pkgs · %d svcs · %d procs · %d ports",
 				sysCell, c.NewManagers, c.NewPackages, c.NewServices, c.NewProcNames, c.NewPorts)},
+			{"custom verbs", fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded)},
 			{"policy rules", fmt.Sprintf("+%d allow, +%d deny (new vs live)", c.PolicyAllowNew, c.PolicyDenyNew)},
 		}, 1, 60))
 	b.WriteString("  This proposal only ADDS access; nothing is narrowed or removed.\n\n")
+
+	// Custom verbs: show the EXACT command template + constraints, so the
+	// operator confirms what each new verb runs — pinned root-owned at apply.
+	if vrows := verbRows(pr); len(vrows) > 0 {
+		b.WriteString(section("CUSTOM VERBS ADDED (exact command templates, pinned root-owned at apply)"))
+		b.WriteString(table([]string{"APP·ACTION", "COMMAND", "PARAMS"}, vrows, 1, 50))
+		b.WriteString("\n")
+	}
 
 	// Capabilities.
 	b.WriteString(section("WHAT IT WILL BE ABLE TO DO (from typed fields)"))
@@ -62,7 +71,7 @@ func RenderText(p Plan) string {
 
 	// Findings.
 	blockN, highN, medN, warnN, passN := tally(p)
-	b.WriteString(section(fmt.Sprintf("FINDINGS — ⛔ %d blocking · 🔴 %d high · 🟡 %d medium · ⚪ %d warn · ✅ %d pass",
+	b.WriteString(section(fmt.Sprintf("FINDINGS — ⛔ %d blocking · 🔴 %d high · 🟡 %d medium · 🔴 %d warn · ✅ %d pass",
 		blockN, highN, medN, warnN, passN)))
 	findRows := make([][]string, 0, len(p.Findings))
 	for _, f := range p.Findings {
@@ -128,7 +137,7 @@ func sevEmoji(label string) string {
 	case "MEDIUM":
 		return "🟡"
 	case "WARN", "warn":
-		return "⚪"
+		return "🔴"
 	case "acknowledge":
 		return "🟠"
 	case "PASS", "pass":

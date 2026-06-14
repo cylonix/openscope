@@ -4,6 +4,7 @@
 package sshexec
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,7 @@ type fakeRunner struct {
 	lastArgs []string
 }
 
-func (f *fakeRunner) Run(name string, args []string, stdin string) (executor.Result, error) {
+func (f *fakeRunner) Run(name string, args []string, stdin io.Reader) (executor.Result, error) {
 	f.lastArgs = args
 	return f.res, f.err
 }

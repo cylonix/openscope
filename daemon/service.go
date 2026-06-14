@@ -260,32 +260,24 @@ func (s Service) loadVisibleDefinitions() (map[string]loadedApp, error) {
 	for name, def := range defs {
 		loaded[name] = loadedApp{
 			Definition: def,
-			Enabled:    def.Bundled || contains(enabled.Apps, name),
+			// RootApplied apps came through `sudo openscope apply` (human-reviewed,
+			// root-owned) — enabled without a separate opt-in, like bundled apps.
+			Enabled: def.Bundled || def.RootApplied || contains(enabled.Apps, name),
 		}
 	}
 	return loaded, nil
 }
 
 func loadAllDefinitions(paths config.Paths) (map[string]appdef.Definition, error) {
-	defs := map[string]appdef.Definition{}
-
 	bundled, err := loadBundledDefinitions()
 	if err != nil {
 		return nil, err
 	}
-	for _, def := range bundled {
-		defs[def.App.Name] = def
-	}
-
-	userDefs, err := appdef.LoadDir(paths.AppsDir)
-	if err != nil {
-		return nil, err
-	}
-	for _, def := range userDefs {
-		defs[def.App.Name] = def
-	}
-
-	return defs, nil
+	// Pinned precedence: bundled (trusted) → apps.d (user) → root applied
+	// registry (authoritative). In SystemMode a privilege boundary exists, so
+	// command-template verbs from the user-writable apps.d are dropped — an
+	// approved command must come from a trusted, agent-unwritable source.
+	return appdef.AssembleDefinitions(bundled, paths.AppsDir, paths.AppDefinitionsFile, config.SystemMode())
 }
 
 func loadBundledDefinitions() ([]appdef.Definition, error) {

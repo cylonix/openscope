@@ -1400,25 +1400,14 @@ func loadVisibleDefinitions(paths config.Paths) (map[string]loadedApp, error) {
 }
 
 func loadAllDefinitions(paths config.Paths) (map[string]appdef.Definition, error) {
-	defs := map[string]appdef.Definition{}
-
 	bundled, err := loadBundledDefinitions()
 	if err != nil {
 		return nil, err
 	}
-	for _, def := range bundled {
-		defs[def.App.Name] = def
-	}
-
-	userDefs, err := appdef.LoadDir(paths.AppsDir)
-	if err != nil {
-		return nil, err
-	}
-	for _, def := range userDefs {
-		defs[def.App.Name] = def
-	}
-
-	return defs, nil
+	// Mirrors daemon.loadAllDefinitions: bundled → apps.d → root applied
+	// registry, with command-template apps.d verbs dropped under SystemMode so
+	// the plan's view matches what the daemon will actually execute.
+	return appdef.AssembleDefinitions(bundled, paths.AppsDir, paths.AppDefinitionsFile, config.SystemMode())
 }
 
 func loadBundledDefinitions() ([]appdef.Definition, error) {

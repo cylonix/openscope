@@ -119,9 +119,14 @@ actions:
   # the target's allowed_paths/allowed_path_prefixes (constraint: path) and the
   # content is piped over stdin, so no file content touches the command line.
   # It still requires a root-applied policy allow rule + target; `openscope plan`
-  # surfaces it as an SSH-WRITE finding to confirm. This is the example to copy
-  # for any other verb (define your own in ~/.openscope/apps.d/<app>.yaml with
-  # executor: ssh).
+  # surfaces it as an SSH-WRITE finding to confirm. Copy this shape for any other
+  # verb: add it under a proposal's `apps.add:` (executor: ssh, a fixed
+  # `command:` template with typed {param} args). `openscope plan` shows the
+  # exact command + SSH-WRITE, and `sudo openscope apply` pins it root-owned in
+  # <AdminDir>/app_definitions.yaml so a same-uid agent cannot rewrite what it
+  # runs. (A personal install with no root daemon may instead drop a manifest in
+  # ~/.openscope/apps.d/<app>.yaml; under a root daemon those agent-writable
+  # command verbs are ignored — the registry is the trusted source.)
   write_file:
     description: Write content (via stdin) to an approved path on a target
     parameters:
