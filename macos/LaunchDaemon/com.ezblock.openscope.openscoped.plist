@@ -28,6 +28,10 @@
 	<string>Background</string>
 	<key>EnvironmentVariables</key>
 	<dict>
+		<!-- The daemon rotates these in place (copy to .1, truncate past 1 MiB)
+		     so the launchd logs can't grow without bound. -->
+		<key>OPENSCOPE_LOG_FILES</key>
+		<string>/var/log/com.ezblock.openscope.openscoped.stdout.log:/var/log/com.ezblock.openscope.openscoped.stderr.log</string>
 		<key>OPENSCOPE_SOCKET</key>
 		<string>/var/run/openscope/openscoped.sock</string>
 		<key>OPENSCOPE_SESSION_SOCKET</key>

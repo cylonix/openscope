@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"path/filepath"
 
@@ -26,6 +27,16 @@ func main() {
 	// that tells you which build launchd is actually running (vs. what's on
 	// disk), without resorting to md5'ing the binary.
 	fmt.Fprintf(os.Stderr, "openscoped %s starting\n", buildinfo.String())
+
+	// Cap the launchd stdout/stderr logs so they can't grow without bound. The
+	// plists pass OPENSCOPE_LOG_FILES (the StandardOut/ErrorPath pair) and an
+	// optional OPENSCOPE_LOG_MAX_BYTES override; each daemon rotates only its
+	// own files. Unset → no-op (dev/test runs, Linux/systemd). Started before
+	// the mode branch so both the root daemon and the session helper cap their
+	// logs.
+	if files := filepath.SplitList(os.Getenv("OPENSCOPE_LOG_FILES")); len(files) > 0 {
+		daemon.StartLogRotator(files, logMaxBytesFromEnv(), daemon.LogRotateInterval)
+	}
 
 	// Session-helper mode (phase 4, macOS): the user-session LaunchAgent that
 	// holds the Notes/Mail TCC grant and runs asapple for the root daemon. It
@@ -91,4 +102,15 @@ func main() {
 	err = <-errCh
 	_, _ = fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
 	os.Exit(daemon.ExitExecutorError)
+}
+
+// logMaxBytesFromEnv resolves the per-log rotation cap, honoring an
+// OPENSCOPE_LOG_MAX_BYTES override and falling back to the 1 MiB default.
+func logMaxBytesFromEnv() int64 {
+	if v := os.Getenv("OPENSCOPE_LOG_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return daemon.DefaultLogMaxBytes
 }
