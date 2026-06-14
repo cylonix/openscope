@@ -9,7 +9,19 @@ import (
 	"testing"
 )
 
+// noSystemSocket forces DefaultPaths to resolve as if no root daemon socket is
+// present, so per-user socket assertions don't depend on whether OpenScope is
+// installed on the test host (a dev box with the root daemon has the real
+// /var/run socket, which would otherwise win). Restored on cleanup.
+func noSystemSocket(t *testing.T) {
+	t.Helper()
+	prev := systemSocketExists
+	systemSocketExists = func() bool { return false }
+	t.Cleanup(func() { systemSocketExists = prev })
+}
+
 func TestDefaultPathsUsesConfigDirOverride(t *testing.T) {
+	noSystemSocket(t)
 	t.Setenv("OPENSCOPE_CONFIG_DIR", "/tmp/openscope-config-test")
 	t.Setenv("OPENSCOPE_SOCKET", "")
 	t.Setenv("OPENSCOPE_HTTP_URL", "")

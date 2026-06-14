@@ -32,6 +32,15 @@ func chooseSocketPath(envSocket, userSocket string, systemExists bool) string {
 	}
 }
 
+// systemSocketExists probes for a running root daemon's CLI socket. It is a
+// package var so tests can make socket resolution host-independent: a dev box
+// with the root daemon installed has the real socket present, which would
+// otherwise override the per-user path the test expects.
+var systemSocketExists = func() bool {
+	_, err := os.Stat(SystemSocketPath)
+	return err == nil
+}
+
 // LaunchDaemonPlistPath is the root LaunchDaemon's plist. Its presence is the
 // single deployment-level signal that the root-daemon (privileged-helper) model
 // is installed — read identically by the daemon, the CLI, and `apply` so they
@@ -149,8 +158,7 @@ func DefaultPaths() (Paths, error) {
 	// sets it to the system socket). Otherwise the CLI prefers a system socket if
 	// one exists — so a user shell finds a root daemon's socket without needing
 	// the env — and falls back to the per-user socket.
-	_, sysSockErr := os.Stat(SystemSocketPath)
-	paths.SocketPath = chooseSocketPath(os.Getenv("OPENSCOPE_SOCKET"), paths.SocketPath, sysSockErr == nil)
+	paths.SocketPath = chooseSocketPath(os.Getenv("OPENSCOPE_SOCKET"), paths.SocketPath, systemSocketExists())
 	paths.AuditFile = auditFilePath(SystemMode(), adminDir, configDir)
 
 	paths.HTTPTLSCertFile = os.Getenv("OPENSCOPE_HTTP_TLS_CERT")
