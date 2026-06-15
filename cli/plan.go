@@ -27,21 +27,55 @@ import (
 	"github.com/openscope/openscope/proposal"
 )
 
-// parallelPathRunner is the ssh runner the apply-time bypass probe uses; nil
-// selects the default os/exec runner. Tests override it to avoid real network.
+// parallelPathRunner is the ssh runner the bypass inspection uses; nil selects
+// the default os/exec runner. Tests override it to avoid real network.
 var parallelPathRunner sshexec.CommandRunner
 
-// probeParallelPath probes each target the proposal adds with the invoking
-// user's ~/.ssh keys (BatchMode, never the broker key, runs the harmless remote
-// `true`). It returns the discovered keys and the confirmed-bypass /
-// inconclusive results. Used by the default live check in both plan and apply.
-func probeParallelPath(paths config.Paths, p proposal.Proposal) (keys []string, bypass, unknown []sshexec.BypassResult) {
-	keys = sshexec.DiscoverUserKeys(paths.HomeDir)
-	if len(keys) == 0 {
-		return keys, nil, nil
+// brokerKeyReadable reports whether the broker's root-owned identity file can be
+// read in this process — true at apply (root), false at plan (the invoking user).
+// It gates the live check: the inspection connects with the broker key, so when we
+// can't read it we DEFER to apply rather than fall back to an auth attempt (which
+// would log a failed publickey and trip fail2ban). Overridable in tests.
+var brokerKeyReadable = func(path string) bool {
+	if path == "" {
+		return false
 	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
+}
+
+// runLiveBypass verifies — without ever attempting a failed auth — that none of
+// the invoking user's ~/.ssh keys can reach the proposal's new SSH targets
+// directly (which would bypass the broker). For each target whose broker key is
+// readable here, it connects ONCE with that key, reads the target's
+// authorized_keys, and folds the verdict into the plan via ApplyBypassResults: a
+// present key or an inconclusive read → blocking SSH-BYPASS (fail closed),
+// all-absent → SSH-NO-BYPASS pass. Targets whose root-owned key isn't readable
+// (plan, as the user) are deferred to apply (root); the static SSH-PARALLEL-PATH
+// finding still stands there. No-op without new targets or ~/.ssh keys.
+// --skip-bypass-check skips it.
+func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
+	p := plan.Proposal
+	if len(p.SSHTargets.Add) == 0 {
+		return
+	}
+	keys := sshexec.DiscoverUserKeys(paths.HomeDir)
+	if len(keys) == 0 {
+		return // no ~/.ssh keys → no parallel path possible; nothing to verify
+	}
+	var bypass, unknown []sshexec.BypassResult
+	inspected := 0
 	for _, t := range p.SSHTargets.Add {
-		for _, r := range sshexec.ProbeBypass(admin.NormalizeSSHTarget(t), keys, parallelPathRunner) {
+		target := admin.NormalizeSSHTarget(t)
+		if !brokerKeyReadable(target.IdentityFile) {
+			continue // can't read the root-owned broker key here → defer to apply
+		}
+		inspected++
+		for _, r := range sshexec.InspectAuthorizedKeys(target, keys, parallelPathRunner) {
 			switch r.Outcome {
 			case sshexec.BypassFound:
 				bypass = append(bypass, r)
@@ -50,29 +84,12 @@ func probeParallelPath(paths config.Paths, p proposal.Proposal) (keys []string, 
 			}
 		}
 	}
-	return keys, bypass, unknown
-}
-
-// runLiveBypass probes the proposal's new targets with the invoking user's
-// ~/.ssh keys and folds the verdict into the plan via ApplyBypassResults: a
-// confirmed bypass OR an inconclusive probe becomes a blocking SSH-BYPASS
-// finding (fail closed — rejection must be proven), and an all-rejected probe
-// becomes an SSH-NO-BYPASS pass. No-op when the proposal adds no targets or the
-// user has no ~/.ssh keys (nothing to verify). Side effect: outbound ssh to each
-// target (BatchMode, runs only the harmless `true`). Progress goes to stderr so
-// it never pollutes --json stdout. Both plan and apply call this by default;
-// --skip-bypass-check skips it.
-func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
-	p := plan.Proposal
-	if len(p.SSHTargets.Add) == 0 {
+	if inspected == 0 {
+		fmt.Fprintln(os.Stderr, "==> Parallel-path check deferred to apply (broker key is root-only); the static SSH-PARALLEL-PATH finding stands")
 		return
 	}
-	keys, bypass, unknown := probeParallelPath(paths, p)
-	if len(keys) == 0 {
-		return // no ~/.ssh keys → no parallel path possible; nothing to verify
-	}
-	fmt.Fprintf(os.Stderr, "==> Parallel-path probe: %d new target(s) × %d ~/.ssh key(s) (BatchMode, runs only `true`)\n",
-		len(p.SSHTargets.Add), len(keys))
+	fmt.Fprintf(os.Stderr, "==> Parallel-path check: read authorized_keys on %d target(s) via the broker key (no auth attempt) and compared %d ~/.ssh key(s)\n",
+		inspected, len(keys))
 	plan.ApplyBypassResults(bypass, unknown)
 }
 

@@ -117,8 +117,8 @@ func (p *Plan) ApplyBypassResults(bypass, unknown []sshexec.BypassResult) {
 		f = Finding{
 			RuleID: "SSH-BYPASS", Severity: SevHigh,
 			Resource: "unverified",
-			Summary:  fmt.Sprintf("%d probe(s) could not confirm your ~/.ssh key(s) are rejected (host unreachable / timed out) — fail closed: rejection must be proven before access is granted", len(unknown)),
-			Fix:      "restore reachability and re-run so the probe can confirm rejection, or pass --skip-bypass-check to override deliberately",
+			Summary:  fmt.Sprintf("%d key(s) could not be confirmed absent from the target(s)' authorized_keys (broker key could not read them, or CA/command-based auth is configured) — fail closed: rejection must be proven before access is granted", len(unknown)),
+			Fix:      "make the target's authorized_keys readable via the broker key and re-run, or run `openscope ssh check-bypass --live-auth` to attempt a real auth; or pass --skip-bypass-check to override deliberately",
 		}
 	default:
 		f = Finding{
@@ -301,7 +301,7 @@ func boundsTable(b Bounds, findings []Finding) []BoundsResult {
 	case count("SSH-NO-BYPASS") > 0:
 		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "pass", "verified live — no ~/.ssh key reaches the target(s)"})
 	case count("SSH-PARALLEL-PATH") > 0:
-		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "warn", "unverified offline — re-run without --skip-bypass-check"})
+		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "warn", "unverified — inspection deferred to apply (root), or skipped"})
 	}
 
 	code := count("SYS-APP-CODEEXEC")

@@ -805,6 +805,7 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 		return daemon.ExitConfigError
 	}
 	only := strings.TrimSpace(flags["target"])
+	liveAuth := flags["live-auth"] == "true"
 	keys := sshexec.DiscoverUserKeys(paths.HomeDir)
 
 	var results []sshexec.BypassResult
@@ -814,7 +815,30 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 			continue
 		}
 		probed++
-		results = append(results, sshexec.ProbeBypass(t, keys, nil)...)
+		target := admin.NormalizeSSHTarget(t)
+		// Default: inspect the target's authorized_keys over the broker's own
+		// (authorized) key — no failed-publickey line, so intrusion detection
+		// (fail2ban/sshguard/CrowdSec) never bans the operator. --live-auth opts
+		// into the older probe that actually ATTEMPTS auth with each ~/.ssh key,
+		// which is conclusive but logs failed auths and can trip those bans.
+		switch {
+		case liveAuth:
+			results = append(results, sshexec.ProbeBypass(target, keys, nil)...)
+		case brokerKeyReadable(target.IdentityFile):
+			results = append(results, sshexec.InspectAuthorizedKeys(target, keys, nil)...)
+		default:
+			// The broker key is root-only here, so we can't connect with it;
+			// attempting it would fail auth and could trip fail2ban. Report
+			// inconclusive without touching the network.
+			keyDesc := target.IdentityFile
+			if keyDesc == "" {
+				keyDesc = "(none configured — ssh would fall back to ~/.ssh)"
+			}
+			detail := "broker key " + keyDesc + " not readable here (root-owned) — run as root so it can connect, or pass --live-auth to attempt a real auth (may trip fail2ban)"
+			for _, k := range keys {
+				results = append(results, sshexec.BypassResult{Target: target.Alias, Host: target.Host, Key: k, Outcome: sshexec.BypassUnknown, Detail: detail})
+			}
+		}
 	}
 
 	bypassed := 0
@@ -830,11 +854,12 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 			"user_keys":       keys,
 			"results":         results,
 			"bypass_found":    bypassed,
+			"mode":            bypassMode(liveAuth),
 		}); code != daemon.ExitOK {
 			return code
 		}
 	} else {
-		printBypassReport(keys, results, bypassed, probed)
+		printBypassReport(keys, results, bypassed, probed, liveAuth)
 	}
 	if bypassed > 0 {
 		return daemon.ExitDenied
@@ -842,11 +867,22 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 	return daemon.ExitOK
 }
 
-func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, probed int) {
-	fmt.Println("OpenScope ssh bypass probe (outbound — ran `true` on each reachable host)")
-	fmt.Printf("  ~/.ssh keys discovered: %d   targets probed: %d\n", len(keys), probed)
+func bypassMode(liveAuth bool) string {
+	if liveAuth {
+		return "live-auth"
+	}
+	return "inspect"
+}
+
+func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, probed int, liveAuth bool) {
+	if liveAuth {
+		fmt.Println("OpenScope ssh bypass check (--live-auth: ATTEMPTED auth with each ~/.ssh key — may trip fail2ban)")
+	} else {
+		fmt.Println("OpenScope ssh bypass check (inspected authorized_keys via the broker key — no auth attempt)")
+	}
+	fmt.Printf("  ~/.ssh keys discovered: %d   targets checked: %d\n", len(keys), probed)
 	if len(keys) == 0 {
-		fmt.Println("  no private keys in ~/.ssh — nothing to probe")
+		fmt.Println("  no private keys in ~/.ssh — nothing to check")
 		return
 	}
 	if len(results) == 0 {
@@ -868,12 +904,23 @@ func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, 
 		}
 		fmt.Println(line)
 	}
+	inconclusive := 0
+	for _, r := range results {
+		if r.Outcome == sshexec.BypassUnknown {
+			inconclusive++
+		}
+	}
 	fmt.Println()
 	if bypassed > 0 {
-		fmt.Printf("ERROR: %d user-key/host pair(s) authenticate directly — the broker is bypassable.\n", bypassed)
+		fmt.Printf("ERROR: %d user-key/host pair(s) reach the host directly — the broker is bypassable.\n", bypassed)
 		fmt.Println("Remove that key from the host's authorized_keys (or stop brokering the host); brokered access must use a root-owned key only.")
+	} else if inconclusive > 0 {
+		fmt.Printf("INCONCLUSIVE: %d pair(s) could not be verified.\n", inconclusive)
+		if !liveAuth {
+			fmt.Println("Inspection reads the target's authorized_keys via the broker's root-owned key; run this as root (or where that key is readable) so it can connect, or pass --live-auth to attempt a real auth (which can trip fail2ban).")
+		}
 	} else {
-		fmt.Println("OK: no ~/.ssh key authenticated to a brokered host.")
+		fmt.Println("OK: no ~/.ssh key is authorized on a brokered host.")
 	}
 }
 
@@ -1998,9 +2045,10 @@ func printUsage() {
 	_, _ = fmt.Fprintln(w, "      [--services <a,b>] [--paths <a,b>] [--path-prefixes <a,b>]")
 	_, _ = fmt.Fprintln(w, "                                    Add an SSH target (sudo)")
 	_, _ = fmt.Fprintln(w, "  ssh targets remove <alias>        Remove an SSH target (sudo)")
-	_, _ = fmt.Fprintln(w, "  ssh check-bypass [--target <alias>] [--json]")
-	_, _ = fmt.Fprintln(w, "                                    Probe whether your ~/.ssh keys can reach")
-	_, _ = fmt.Fprintln(w, "                                    brokered hosts directly (opt-in, outbound ssh)")
+	_, _ = fmt.Fprintln(w, "  ssh check-bypass [--target <alias>] [--live-auth] [--json]")
+	_, _ = fmt.Fprintln(w, "                                    Check if a ~/.ssh key reaches a brokered host")
+	_, _ = fmt.Fprintln(w, "                                    (inspects authorized_keys via the broker key by")
+	_, _ = fmt.Fprintln(w, "                                    default; --live-auth attempts auth, may trip fail2ban)")
 	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "HTTP profiles:")
 	_, _ = fmt.Fprintln(w, "  http profiles list                List configured HTTP profiles")

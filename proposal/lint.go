@@ -189,16 +189,19 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 	// readable private keys in ~/.ssh. Those keys are a POTENTIAL direct path to
 	// any reachable host, which would bypass the broker no matter how well the
 	// broker's own root-owned key is custodied. This static finding is the
-	// UNVERIFIED placeholder: plan and apply replace it with a definitive
-	// SSH-BYPASS (blocking) or SSH-NO-BYPASS (pass) once the live probe runs (it
-	// runs by default — this MEDIUM only survives under --skip-bypass-check).
+	// UNVERIFIED placeholder: the live inspection replaces it with a definitive
+	// SSH-BYPASS (blocking) or SSH-NO-BYPASS (pass). That inspection reads the
+	// target's authorized_keys over the broker's root-owned key (no auth attempt),
+	// so it runs at apply (root, where the key is readable) and DEFERS at plan when
+	// run as the user. This MEDIUM survives whenever it hasn't run yet — deferred to
+	// apply, or skipped with --skip-bypass-check.
 	if len(p.SSHTargets.Add) > 0 {
 		if keys := sshexec.DiscoverUserKeys(homeDir); len(keys) > 0 {
 			out = append(out, Finding{
 				RuleID: "SSH-PARALLEL-PATH", Severity: SevMedium,
 				Resource: fmt.Sprintf("%d key(s) in ~/.ssh", len(keys)),
-				Summary:  "agent-readable ~/.ssh keys are a potential direct path to the new target(s) — the live bypass probe was SKIPPED (--skip-bypass-check), so this is unverified",
-				Fix:      "re-run without --skip-bypass-check to verify live (plan probes by default), or run `openscope ssh check-bypass`; ensure no ~/.ssh key authenticates to these hosts",
+				Summary:  "agent-readable ~/.ssh keys are a potential direct path to the new target(s) — the live bypass inspection has not run here (deferred to apply, or skipped), so this is unverified",
+				Fix:      "let `sudo openscope apply` run the inspection (it reads the targets' authorized_keys via the root-owned broker key — no failed-auth probe), or run `openscope ssh check-bypass` as root; ensure no ~/.ssh key is authorized on these hosts",
 			})
 		}
 	}

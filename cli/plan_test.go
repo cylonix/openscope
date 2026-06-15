@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,19 +42,24 @@ policy:
     - {effect: allow, agent: bot, app: ssh, action: read_file, constraints: {target: web}}
 `
 
-func homeWithKey(t *testing.T) string {
+func homeWithKey(t *testing.T) (home, pubLine string) {
 	t.Helper()
-	home := t.TempDir()
+	home = t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"id_test", "id_test.pub"} {
-		if err := os.WriteFile(filepath.Join(sshDir, f), []byte("k"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	// A real public-key line (valid base64 blob, so it fingerprints) plus its
+	// private sibling so DiscoverUserKeys picks it up.
+	blob := base64.StdEncoding.EncodeToString([]byte("openscope-test-ed25519-keyblob!!"))
+	pubLine = "ssh-ed25519 " + blob + " test@host"
+	if err := os.WriteFile(filepath.Join(sshDir, "id_test.pub"), []byte(pubLine+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	return home
+	if err := os.WriteFile(filepath.Join(sshDir, "id_test"), []byte("PRIVATE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home, pubLine
 }
 
 func bypassPlan(t *testing.T, home string) proposal.Plan {
@@ -66,35 +72,38 @@ func bypassPlan(t *testing.T, home string) proposal.Plan {
 }
 
 func TestRunLiveBypassFoldsVerdictIntoPlan(t *testing.T) {
-	home := homeWithKey(t)
+	home, pubLine := homeWithKey(t)
 	paths := testPaths(t)
 	paths.HomeDir = home
 
-	old := parallelPathRunner
-	defer func() { parallelPathRunner = old }()
+	oldRunner, oldReadable := parallelPathRunner, brokerKeyReadable
+	defer func() { parallelPathRunner = oldRunner; brokerKeyReadable = oldReadable }()
+	// The broker key path is fake in tests; force "readable" so inspection runs.
+	brokerKeyReadable = func(string) bool { return true }
 
-	// ssh exits 0 → the user key authenticates → blocking SSH-BYPASS.
-	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 0}}
+	// The user's key IS in the target's authorized_keys → bypass → blocking.
+	parallelPathRunner = bypassStub{result: executor.Result{Stdout: pubLine + "\n__OPENSCOPE_SSHD__\n"}}
 	plan := bypassPlan(t, home)
 	runLiveBypass(paths, &plan)
 	if !plan.Blocked {
-		t.Fatalf("expected plan BLOCKED when a ~/.ssh key reaches the target")
+		t.Fatalf("expected plan BLOCKED when a ~/.ssh key is in the target's authorized_keys")
 	}
 
-	// publickey refused → conclusively rejected → not blocked (SSH-NO-BYPASS).
-	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}}
+	// A different key authorized, no CA/command → user key absent → not blocked.
+	other := base64.StdEncoding.EncodeToString([]byte("an-entirely-different-keyblob!!!!"))
+	parallelPathRunner = bypassStub{result: executor.Result{Stdout: "ssh-ed25519 " + other + " other@host\n__OPENSCOPE_SSHD__\n"}}
 	plan = bypassPlan(t, home)
 	runLiveBypass(paths, &plan)
 	if plan.Blocked {
-		t.Fatalf("expected plan OK when the key is conclusively refused")
+		t.Fatalf("expected plan OK when the user key is absent from authorized_keys")
 	}
 
-	// inconclusive (timeout) → fail closed → blocked. Must confirm rejection.
+	// Broker read fails (host unreachable) → inconclusive → fail closed → blocked.
 	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 255, Stderr: "ssh: connect to host x port 22: Operation timed out"}}
 	plan = bypassPlan(t, home)
 	runLiveBypass(paths, &plan)
 	if !plan.Blocked {
-		t.Fatalf("expected plan BLOCKED when the probe is inconclusive (fail closed)")
+		t.Fatalf("expected plan BLOCKED when the broker read is inconclusive (fail closed)")
 	}
 }
 
