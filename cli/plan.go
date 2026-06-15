@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,20 +23,21 @@ import (
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/daemon"
 	"github.com/openscope/openscope/executor/sshexec"
+	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
 	"github.com/openscope/openscope/proposal"
 )
 
-// parallelPathRunner is the ssh runner the bypass inspection uses; nil selects
-// the default os/exec runner. Tests override it to avoid real network.
+// parallelPathRunner is the ssh runner the LOCAL fallback read uses (apply-as-root,
+// when the daemon is unreachable); nil selects the default os/exec runner. Tests
+// override it to avoid real network.
 var parallelPathRunner sshexec.CommandRunner
 
-// brokerKeyReadable reports whether the broker's root-owned identity file can be
-// read in this process — true at apply (root), false at plan (the invoking user).
-// It gates the live check: the inspection connects with the broker key, so when we
-// can't read it we DEFER to apply rather than fall back to an auth attempt (which
-// would log a failed publickey and trip fail2ban). Overridable in tests.
+// brokerKeyReadable reports whether the broker's root-owned identity file can be read
+// in this process — true at apply (root), false at plan (the invoking user). Used only
+// to decide whether the LOCAL fallback read is possible when the daemon is unreachable.
+// Overridable in tests.
 var brokerKeyReadable = func(path string) bool {
 	if path == "" {
 		return false
@@ -48,34 +50,90 @@ var brokerKeyReadable = func(path string) bool {
 	return true
 }
 
-// runLiveBypass verifies — without ever attempting a failed auth — that none of
-// the invoking user's ~/.ssh keys can reach the proposal's new SSH targets
-// directly (which would bypass the broker). For each target whose broker key is
-// readable here, it connects ONCE with that key, reads the target's
-// authorized_keys, and folds the verdict into the plan via ApplyBypassResults: a
-// present key or an inconclusive read → blocking SSH-BYPASS (fail closed),
-// all-absent → SSH-NO-BYPASS pass. Targets whose root-owned key isn't readable
-// (plan, as the user) are deferred to apply (root); the static SSH-PARALLEL-PATH
-// finding still stands there. No-op without new targets or ~/.ssh keys.
-// --skip-bypass-check skips it.
+// inspectBypassViaDaemon asks the daemon (root, holds the broker key) to read the
+// target's authorized_keys and compare against keys' fingerprints, returning the
+// per-key verdict. The authorized_keys content never leaves the daemon. reached=false
+// means the daemon is unreachable, so the caller can fall back to a local read or
+// defer. Overridable in tests.
+var inspectBypassViaDaemon = func(paths config.Paths, agentID string, target admin.SSHTarget, keys []sshexec.UserKey) (results []sshexec.BypassResult, reached bool) {
+	tj, err := json.Marshal(target)
+	if err != nil {
+		return nil, false
+	}
+	kj, err := json.Marshal(keys)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := ipc.Call(paths, ipc.Request{
+		App:    "ssh",
+		Action: "inspect_bypass",
+		Agent:  agentID,
+		Params: map[string]string{"target": string(tj), "keys": string(kj)},
+	})
+	if err != nil {
+		return nil, false // daemon unreachable
+	}
+	if resp.ExitCode == daemon.ExitNotFound {
+		return nil, false // older daemon without the inspect_bypass built-in → defer/fallback
+	}
+	if !resp.OK {
+		// reached but rejected (custody gate, bad target) → inconclusive, fail closed.
+		out := make([]sshexec.BypassResult, 0, len(keys))
+		for _, k := range keys {
+			out = append(out, sshexec.BypassResult{Target: target.Alias, Host: target.Host, Key: k.Path, Outcome: sshexec.BypassUnknown, Detail: resp.Error})
+		}
+		return out, true
+	}
+	// resp.Data round-trips through JSON (any); re-decode into typed results.
+	b, _ := json.Marshal(resp.Data)
+	_ = json.Unmarshal(b, &results)
+	return results, true
+}
+
+// localOperator labels who ran the inspection in the daemon's audit (best-effort).
+func localOperator() string {
+	if u := os.Getenv("SUDO_USER"); u != "" {
+		return u
+	}
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return "operator"
+}
+
+// runLiveBypass verifies — without ever attempting a failed auth — that none of the
+// invoking user's ~/.ssh keys can reach the proposal's new SSH targets directly (which
+// would bypass the broker). It asks the daemon (root, holds the broker key) to read
+// each target's authorized_keys and compare against the user's key fingerprints, then
+// folds the verdict into the plan via ApplyBypassResults: a present key or an
+// inconclusive read → blocking SSH-BYPASS (fail closed), all-absent → SSH-NO-BYPASS
+// pass. No sudo needed. If the daemon is unreachable it falls back to a local read where
+// the broker key is readable (apply-as-root), else defers (the static SSH-PARALLEL-PATH
+// finding stands). No-op without new targets or ~/.ssh keys. --skip-bypass-check skips it.
 func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 	p := plan.Proposal
 	if len(p.SSHTargets.Add) == 0 {
 		return
 	}
-	keys := sshexec.DiscoverUserKeys(paths.HomeDir)
-	if len(keys) == 0 {
+	keyPaths := sshexec.DiscoverUserKeys(paths.HomeDir)
+	if len(keyPaths) == 0 {
 		return // no ~/.ssh keys → no parallel path possible; nothing to verify
 	}
+	keys := sshexec.LocalUserKeys(keyPaths)
+	agentID := localOperator()
 	var bypass, unknown []sshexec.BypassResult
 	inspected := 0
 	for _, t := range p.SSHTargets.Add {
 		target := admin.NormalizeSSHTarget(t)
-		if !brokerKeyReadable(target.IdentityFile) {
-			continue // can't read the root-owned broker key here → defer to apply
+		results, reached := inspectBypassViaDaemon(paths, agentID, target, keys)
+		if !reached && brokerKeyReadable(target.IdentityFile) {
+			results, reached = sshexec.InspectBypass(target, keys, parallelPathRunner), true
+		}
+		if !reached {
+			continue // daemon down and broker key is root-only → defer this target
 		}
 		inspected++
-		for _, r := range sshexec.InspectAuthorizedKeys(target, keys, parallelPathRunner) {
+		for _, r := range results {
 			switch r.Outcome {
 			case sshexec.BypassFound:
 				bypass = append(bypass, r)
@@ -85,10 +143,10 @@ func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 		}
 	}
 	if inspected == 0 {
-		fmt.Fprintln(os.Stderr, "==> Parallel-path check deferred to apply (broker key is root-only); the static SSH-PARALLEL-PATH finding stands")
+		fmt.Fprintln(os.Stderr, "==> Parallel-path check deferred (daemon unreachable and the broker key is root-only); the static SSH-PARALLEL-PATH finding stands")
 		return
 	}
-	fmt.Fprintf(os.Stderr, "==> Parallel-path check: read authorized_keys on %d target(s) via the broker key (no auth attempt) and compared %d ~/.ssh key(s)\n",
+	fmt.Fprintf(os.Stderr, "==> Parallel-path check: inspected %d target(s) via the daemon (broker-key read, no auth attempt), compared %d ~/.ssh key(s)\n",
 		inspected, len(keys))
 	plan.ApplyBypassResults(bypass, unknown)
 }

@@ -807,6 +807,8 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 	only := strings.TrimSpace(flags["target"])
 	liveAuth := flags["live-auth"] == "true"
 	keys := sshexec.DiscoverUserKeys(paths.HomeDir)
+	userKeys := sshexec.LocalUserKeys(keys)
+	agentID := localOperator()
 
 	var results []sshexec.BypassResult
 	probed := 0
@@ -816,29 +818,28 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 		}
 		probed++
 		target := admin.NormalizeSSHTarget(t)
-		// Default: inspect the target's authorized_keys over the broker's own
-		// (authorized) key — no failed-publickey line, so intrusion detection
-		// (fail2ban/sshguard/CrowdSec) never bans the operator. --live-auth opts
-		// into the older probe that actually ATTEMPTS auth with each ~/.ssh key,
-		// which is conclusive but logs failed auths and can trip those bans.
-		switch {
-		case liveAuth:
+		if liveAuth {
+			// ATTEMPTS auth with each ~/.ssh key — conclusive, but logs failed auths
+			// and can trip fail2ban/sshguard/CrowdSec. Opt-in only.
 			results = append(results, sshexec.ProbeBypass(target, keys, nil)...)
-		case brokerKeyReadable(target.IdentityFile):
-			results = append(results, sshexec.InspectAuthorizedKeys(target, keys, nil)...)
-		default:
-			// The broker key is root-only here, so we can't connect with it;
-			// attempting it would fail auth and could trip fail2ban. Report
-			// inconclusive without touching the network.
-			keyDesc := target.IdentityFile
-			if keyDesc == "" {
-				keyDesc = "(none configured — ssh would fall back to ~/.ssh)"
-			}
-			detail := "broker key " + keyDesc + " not readable here (root-owned) — run as root so it can connect, or pass --live-auth to attempt a real auth (may trip fail2ban)"
-			for _, k := range keys {
-				results = append(results, sshexec.BypassResult{Target: target.Alias, Host: target.Host, Key: k, Outcome: sshexec.BypassUnknown, Detail: detail})
-			}
+			continue
 		}
+		// Default: read the target's authorized_keys over the broker key (no
+		// failed-publickey line) and compare — routed through the daemon (root, holds
+		// the key) so it works without sudo. Falls back to a local read if the daemon
+		// is down and the broker key is readable here.
+		r, reached := inspectBypassViaDaemon(paths, agentID, target, userKeys)
+		if !reached && brokerKeyReadable(target.IdentityFile) {
+			r, reached = sshexec.InspectBypass(target, userKeys, nil), true
+		}
+		if !reached {
+			detail := "daemon unreachable and the broker key is root-only — start openscoped, or pass --live-auth to attempt a real auth (may trip fail2ban)"
+			for _, k := range userKeys {
+				results = append(results, sshexec.BypassResult{Target: target.Alias, Host: target.Host, Key: k.Path, Outcome: sshexec.BypassUnknown, Detail: detail})
+			}
+			continue
+		}
+		results = append(results, r...)
 	}
 
 	bypassed := 0

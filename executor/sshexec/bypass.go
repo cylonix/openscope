@@ -153,27 +153,29 @@ const authKeysSentinel = "__OPENSCOPE_SSHD__"
 // Read-only; writes nothing.
 const authKeysReadCmd = `for f in "$HOME"/.ssh/authorized_keys "$HOME"/.ssh/authorized_keys2 /root/.ssh/authorized_keys /root/.ssh/authorized_keys2 /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2; do [ -r "$f" ] && cat "$f" 2>/dev/null; done; echo ` + authKeysSentinel + `; cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | grep -iE '^[[:space:]]*(AuthorizedKeysFile|TrustedUserCAKeys|AuthorizedKeysCommand)[[:space:]]' || true`
 
-// InspectAuthorizedKeys connects to target with the broker's key (a successful,
-// authorized login — no failed-publickey line for fail2ban to count), reads the
-// target's authorized public keys, and reports, for each of userKeys, whether that
-// personal key is authorized there (a path that bypasses the broker):
-//
-//   - present in authorized_keys                     -> BypassFound
-//   - absent, no CA/command/relocated key file        -> BypassClear
-//   - absent, but such alternate auth IS configured   -> BypassUnknown
-//   - target unreachable / broker key won't connect   -> BypassUnknown
-func InspectAuthorizedKeys(target admin.SSHTarget, userKeys []string, run CommandRunner) []BypassResult {
+// WithinBrokerKeyDir reports whether path is inside the broker's root-owned key dir
+// (brokerSSHDir). The inspect_bypass daemon op uses it as a custody gate: it will only
+// connect with an identity file under this dir, so a caller passing proposed target
+// details can't make the daemon authenticate with an arbitrary (e.g. root's personal)
+// key. Legitimate brokered targets keep their keys here per the custody rule.
+func WithinBrokerKeyDir(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.Clean(path)
+	return clean == brokerSSHDir || strings.HasPrefix(clean, brokerSSHDir+string(filepath.Separator))
+}
+
+// ReadAuthorizedKeys connects to target with the broker's key (a successful,
+// authorized login — no failed-publickey line for fail2ban to count) and returns the
+// raw authorized_keys + sshd_config dump (the read-only authKeysReadCmd output). It
+// is the PRIVILEGED half of the bypass inspection and must run where the broker key
+// is readable: the root daemon (via the inspect_bypass built-in), or apply-as-root.
+// ok=false with a one-line detail when the connection or read fails.
+func ReadAuthorizedKeys(target admin.SSHTarget, run CommandRunner) (dump string, ok bool, detail string) {
 	if run == nil {
 		run = execRunner{}
 	}
-	out := make([]BypassResult, 0, len(userKeys))
-
-	// PRECONDITION: target.IdentityFile (the broker key) must be readable in this
-	// process — the caller proves that before calling. We connect with that key; if
-	// it can't be read, ssh would TCP-connect and fail auth, logging the exact
-	// failed-publickey line fail2ban bans on. Both callers (plan/apply's
-	// runLiveBypass and `ssh check-bypass`) gate on the broker key's readability and
-	// DEFER rather than attempt a doomed connection.
 	port := target.Port
 	if port == 0 {
 		port = 22
@@ -197,25 +199,65 @@ func InspectAuthorizedKeys(target admin.SSHTarget, userKeys []string, run Comman
 
 	res, err := run.Run("ssh", args, nil)
 	if err != nil || res.ExitCode != 0 {
-		detail := strings.TrimSpace(res.Stderr)
+		d := strings.TrimSpace(res.Stderr)
 		if err != nil {
-			detail = err.Error()
+			d = err.Error()
 		}
-		detail = "could not read authorized_keys via the broker key: " + firstLine(detail)
-		for _, k := range userKeys {
-			out = append(out, BypassResult{Target: target.Alias, Host: target.Host, Key: k, Outcome: BypassUnknown, Detail: detail})
+		return "", false, firstLine(d)
+	}
+	return res.Stdout, true, ""
+}
+
+// UserKey pairs a personal key's display path with its SHA256 public-key fingerprint.
+// The CLI computes these from its OWN ~/.ssh/*.pub files and hands them to the daemon,
+// so the comparison runs inside the daemon and the target's authorized_keys never
+// leaves it — only the per-key verdict does. A fingerprint is derived from a public
+// key; it carries no secret.
+type UserKey struct {
+	Path        string `json:"path"`
+	Fingerprint string `json:"fingerprint"` // "" if the .pub could not be read
+}
+
+// LocalUserKeys reads each private-key path's ".pub" sibling and returns its
+// fingerprint. Runs on the operator's machine; no private material is read.
+func LocalUserKeys(privKeyPaths []string) []UserKey {
+	out := make([]UserKey, 0, len(privKeyPaths))
+	for _, p := range privKeyPaths {
+		fp, _ := localKeyFingerprint(p) // "" when the .pub is unreadable
+		out = append(out, UserKey{Path: p, Fingerprint: fp})
+	}
+	return out
+}
+
+// InspectBypass reads target's authorized_keys via the broker key and reports, for each
+// UserKey, whether it is authorized there (a path that bypasses the broker). The read
+// AND the compare happen here, so authorized_keys is never returned, only the verdict:
+//
+//   - fingerprint present in authorized_keys           -> BypassFound
+//   - absent, no CA/command/relocated key file          -> BypassClear
+//   - absent, but such alternate auth IS configured     -> BypassUnknown
+//   - broker key won't connect / read fails             -> BypassUnknown
+//
+// Runs in the daemon (root, holds the broker key) for plan/check-bypass, and locally
+// for apply-as-root. nil run selects the default os/exec runner.
+func InspectBypass(target admin.SSHTarget, keys []UserKey, run CommandRunner) []BypassResult {
+	dump, ok, detail := ReadAuthorizedKeys(target, run)
+	if !ok {
+		detail = "could not read authorized_keys via the broker key: " + detail
+		out := make([]BypassResult, 0, len(keys))
+		for _, k := range keys {
+			out = append(out, BypassResult{Target: target.Alias, Host: target.Host, Key: k.Path, Outcome: BypassUnknown, Detail: detail})
 		}
 		return out
 	}
-
-	authorized, hasAltAuth := parseAuthorizedKeys(res.Stdout)
-	for _, k := range userKeys {
-		r := BypassResult{Target: target.Alias, Host: target.Host, Key: k}
-		fp, ok := localKeyFingerprint(k)
+	authorized, hasAltAuth := parseAuthorizedKeys(dump)
+	out := make([]BypassResult, 0, len(keys))
+	for _, k := range keys {
+		r := BypassResult{Target: target.Alias, Host: target.Host, Key: k.Path}
 		switch {
-		case !ok:
-			r.Outcome, r.Detail = BypassUnknown, "could not fingerprint local public key "+k+".pub"
-		case authorized[fp]:
+		case k.Fingerprint == "":
+			r.Outcome, r.Detail = BypassUnknown, "could not fingerprint local public key "+k.Path+".pub"
+		case authorized[k.Fingerprint]:
 			r.Outcome = BypassFound
 		case hasAltAuth:
 			r.Outcome, r.Detail = BypassUnknown, "key not in authorized_keys, but CA/command-based auth is configured on the target — run the explicit live-auth check to be certain"
@@ -225,6 +267,13 @@ func InspectAuthorizedKeys(target admin.SSHTarget, userKeys []string, run Comman
 		out = append(out, r)
 	}
 	return out
+}
+
+// InspectAuthorizedKeys is the local-read wrapper: it fingerprints userKeys' .pub files
+// here and inspects in one call. Used by apply-as-root and `ssh check-bypass` as root,
+// where the broker key is readable locally.
+func InspectAuthorizedKeys(target admin.SSHTarget, userKeys []string, run CommandRunner) []BypassResult {
+	return InspectBypass(target, LocalUserKeys(userKeys), run)
 }
 
 // parseAuthorizedKeys splits the remote dump on the sentinel: the SHA256

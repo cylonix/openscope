@@ -13,6 +13,7 @@ import (
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/policy"
 	"github.com/openscope/openscope/proposal"
 )
@@ -294,5 +295,50 @@ func TestApplyProposalIdempotent(t *testing.T) {
 	pf, _ := policy.LoadDefaultOrEmpty(paths)
 	if len(pf.Rules) != 2 {
 		t.Errorf("idempotent apply changed rule count to %d", len(pf.Rules))
+	}
+}
+
+// TestRunLiveBypassViaDaemon exercises the primary path: plan (as the user, broker key
+// not readable) routes the inspection through the daemon, which returns the per-key
+// verdict, and the plan folds it — no sudo, no local broker-key read.
+func TestRunLiveBypassViaDaemon(t *testing.T) {
+	home, _ := homeWithKey(t)
+	paths := testPaths(t)
+	paths.HomeDir = home
+
+	oldDaemon, oldReadable := inspectBypassViaDaemon, brokerKeyReadable
+	defer func() { inspectBypassViaDaemon = oldDaemon; brokerKeyReadable = oldReadable }()
+	// As the user: the broker key isn't readable, so the local fallback must NOT fire;
+	// only the daemon's verdict drives the plan.
+	brokerKeyReadable = func(string) bool { return false }
+
+	// Daemon reports a bypass → plan blocked.
+	inspectBypassViaDaemon = func(_ config.Paths, _ string, target admin.SSHTarget, _ []sshexec.UserKey) ([]sshexec.BypassResult, bool) {
+		return []sshexec.BypassResult{{Target: target.Alias, Host: target.Host, Outcome: sshexec.BypassFound}}, true
+	}
+	plan := bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if !plan.Blocked {
+		t.Fatal("a daemon-reported bypass must block the plan")
+	}
+
+	// Daemon reports clear → not blocked.
+	inspectBypassViaDaemon = func(_ config.Paths, _ string, target admin.SSHTarget, _ []sshexec.UserKey) ([]sshexec.BypassResult, bool) {
+		return []sshexec.BypassResult{{Target: target.Alias, Host: target.Host, Outcome: sshexec.BypassClear}}, true
+	}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if plan.Blocked {
+		t.Fatal("a daemon-reported clear must not block the plan")
+	}
+
+	// Daemon unreachable AND broker key root-only → deferred, plan not blocked at plan time.
+	inspectBypassViaDaemon = func(_ config.Paths, _ string, _ admin.SSHTarget, _ []sshexec.UserKey) ([]sshexec.BypassResult, bool) {
+		return nil, false
+	}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if plan.Blocked {
+		t.Fatal("deferred (daemon down, broker key root-only) must not block at plan time")
 	}
 }

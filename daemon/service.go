@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/executor"
+	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
@@ -78,6 +80,15 @@ func (s Service) HandleWithMeta(request ipc.Request, meta RequestMeta) ipc.Respo
 func (s Service) Handle(request ipc.Request) ipc.Response {
 	if request.App == "" || request.Action == "" || request.Agent == "" {
 		return ipc.Response{OK: false, Error: "app, action, and agent are required", ExitCode: ExitInvalid}
+	}
+
+	// Built-in operator verification: read a brokered target's authorized_keys via the
+	// broker key and compare against the caller's key fingerprints, so plan/check-bypass
+	// can verify the SSH boundary without sudo (the daemon runs as root and holds the
+	// broker key). Read-only, bounded to configured targets; the authorized_keys never
+	// leaves the daemon — only the per-key verdict is returned.
+	if request.App == "ssh" && request.Action == "inspect_bypass" {
+		return s.handleInspectBypass(request)
 	}
 
 	loaded, err := s.loadVisibleDefinitions()
@@ -244,6 +255,53 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		Data:     filteredOutput,
 		ExitCode: ExitOK,
 	}
+}
+
+// handleInspectBypass performs the read-only SSH parallel-path verification on behalf
+// of `plan`/`check-bypass`: it reads the target's authorized_keys with the broker key
+// (which the daemon holds as root) and compares against the caller-supplied key
+// fingerprints, returning only the per-key verdict. The authorized_keys content never
+// leaves the daemon. The caller passes the target details (plan's new targets aren't in
+// the config yet); the daemon only connects with an identity file under the root-owned
+// broker key dir, so a caller can't make it authenticate with an arbitrary key.
+// Read-only; nothing is written.
+func (s Service) handleInspectBypass(request ipc.Request) ipc.Response {
+	var target admin.SSHTarget
+	if raw := request.Params["target"]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &target); err != nil {
+			return ipc.Response{OK: false, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Error: fmt.Sprintf("invalid target param: %v", err), ExitCode: ExitInvalid}
+		}
+	}
+	if target.Host == "" {
+		return ipc.Response{OK: false, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Error: "target host is required", ExitCode: ExitInvalid}
+	}
+	if !sshexec.WithinBrokerKeyDir(target.IdentityFile) {
+		return ipc.Response{OK: false, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Error: "target identity_file must be under the broker key dir for inspection", ExitCode: ExitDenied}
+	}
+	var keys []sshexec.UserKey
+	if raw := request.Params["keys"]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+			return ipc.Response{OK: false, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Error: fmt.Sprintf("invalid keys param: %v", err), ExitCode: ExitInvalid}
+		}
+	}
+
+	results := sshexec.InspectBypass(admin.NormalizeSSHTarget(target), keys, nil)
+	found := 0
+	for _, r := range results {
+		if r.Outcome == sshexec.BypassFound {
+			found++
+		}
+	}
+	s.recordAudit(audit.Event{
+		Timestamp: time.Now().UTC(),
+		Agent:     request.Agent,
+		App:       "ssh",
+		Action:    "inspect_bypass",
+		Params:    map[string]string{"target": target.Alias, "host": target.Host},
+		Decision:  "allow",
+		Result:    fmt.Sprintf("inspected (%d key(s), %d bypass)", len(results), found),
+	})
+	return ipc.Response{OK: true, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Data: results, ExitCode: ExitOK}
 }
 
 func (s Service) loadVisibleDefinitions() (map[string]loadedApp, error) {

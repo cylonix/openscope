@@ -4,11 +4,13 @@
 package daemon
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
@@ -240,5 +242,52 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) returned error: %v", path, err)
+	}
+}
+
+// TestServiceHandleInspectBypassGate covers the security-relevant, no-network parts of
+// the inspect_bypass built-in: it refuses to connect with an identity file outside the
+// root-owned broker key dir (so a caller can't make the daemon use an arbitrary key),
+// and rejects malformed requests, before any SSH connection is attempted.
+func TestServiceHandleInspectBypassGate(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{
+		ConfigDir:       filepath.Join(home, ".openscope"),
+		AppsDir:         filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:          filepath.Join(home, ".openscope", "run"),
+		StateDir:        filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:    filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:      filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:       filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile: filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:      filepath.Join(home, ".openscope", "run", "openscoped.sock"),
+		AdminDir:        filepath.Join(home, "admin"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("EnsureLayout: %v", err)
+	}
+	service := NewService(paths)
+
+	req := func(target admin.SSHTarget) ipc.Request {
+		tj, _ := json.Marshal(target)
+		return ipc.Request{App: "ssh", Action: "inspect_bypass", Agent: "operator", Params: map[string]string{"target": string(tj), "keys": "[]"}}
+	}
+
+	// identity_file outside the broker key dir → denied, no connection attempted.
+	resp := service.Handle(req(admin.SSHTarget{Alias: "x", Host: "h.example.com", User: "root", IdentityFile: "/root/.ssh/id_rsa"}))
+	if resp.OK || resp.ExitCode != ExitDenied {
+		t.Fatalf("non-broker identity_file must be denied, got %#v", resp)
+	}
+
+	// missing host → invalid.
+	resp = service.Handle(req(admin.SSHTarget{Alias: "x", IdentityFile: "/var/openscope/ssh/x/id_rsa"}))
+	if resp.OK || resp.ExitCode != ExitInvalid {
+		t.Fatalf("missing host must be invalid, got %#v", resp)
+	}
+
+	// malformed target JSON → invalid.
+	resp = service.Handle(ipc.Request{App: "ssh", Action: "inspect_bypass", Agent: "operator", Params: map[string]string{"target": "{not json", "keys": "[]"}})
+	if resp.OK || resp.ExitCode != ExitInvalid {
+		t.Fatalf("malformed target must be invalid, got %#v", resp)
 	}
 }

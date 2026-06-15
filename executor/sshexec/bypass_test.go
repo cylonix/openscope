@@ -223,3 +223,58 @@ func TestInspectAuthorizedKeys(t *testing.T) {
 		t.Errorf("personal key must never be offered to ssh: %s", joined)
 	}
 }
+
+func TestWithinBrokerKeyDir(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/var/openscope/ssh/openscope-demo/id_rsa", true},
+		{"/var/openscope/ssh", true},
+		{"/var/openscope/sshkeys/id_rsa", false}, // sibling dir, not under
+		{"/root/.ssh/id_rsa", false},
+		{"/home/u/.ssh/id_ed25519", false},
+		{"", false},
+		{"/var/openscope/ssh/../../etc/shadow", false}, // cleaned path escapes the dir
+	}
+	for _, c := range cases {
+		if got := WithinBrokerKeyDir(c.path); got != c.want {
+			t.Errorf("WithinBrokerKeyDir(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+// TestInspectBypassFingerprints drives InspectBypass with caller-supplied fingerprints
+// (the daemon path), so the target's authorized_keys is compared in-process and only
+// the verdict is produced — no .pub files read here.
+func TestInspectBypassFingerprints(t *testing.T) {
+	mineLine, mineFP := ed25519Line(0x07, "me@laptop")
+	otherLine, _ := ed25519Line(0x08, "ci@server")
+	target := admin.SSHTarget{Alias: "prod", Host: "p.example.com", User: "root", IdentityFile: "/var/openscope/ssh/prod/id_rsa"}
+	dump := func(auth, cfg string) string { return auth + "\n" + authKeysSentinel + "\n" + cfg }
+
+	cases := []struct {
+		name string
+		res  executor.Result
+		fp   string
+		want string
+	}{
+		{"present is bypass", executor.Result{ExitCode: 0, Stdout: dump(mineLine, "")}, mineFP, BypassFound},
+		{"absent is clear", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "")}, mineFP, BypassClear},
+		{"absent + CA trust is inconclusive", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "TrustedUserCAKeys /etc/ssh/ca.pub")}, mineFP, BypassUnknown},
+		{"empty fingerprint is inconclusive", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "")}, "", BypassUnknown},
+		{"read failure is inconclusive", executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}, mineFP, BypassUnknown},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fr := &fakeRunner{res: c.res}
+			out := InspectBypass(target, []UserKey{{Path: "/home/u/.ssh/id", Fingerprint: c.fp}}, fr)
+			if len(out) != 1 {
+				t.Fatalf("want 1 result, got %d", len(out))
+			}
+			if out[0].Outcome != c.want {
+				t.Fatalf("outcome = %q, want %q (detail %q)", out[0].Outcome, c.want, out[0].Detail)
+			}
+		})
+	}
+}
