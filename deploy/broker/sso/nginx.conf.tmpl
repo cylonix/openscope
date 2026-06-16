@@ -1,0 +1,26 @@
+# Token-injector hop between oauth2-proxy and the broker.
+#
+# oauth2-proxy authenticates the human and forwards X-Forwarded-Email, but
+# leaves the original IdP JWT in Authorization. The broker authenticates the
+# PROXY with its own osk_* token scheme, so this hop:
+#   - replaces Authorization with the broker-minted trusted-proxy token, and
+#   - passes the verified email through unchanged.
+#
+# __PROXY_TOKEN__ is substituted by scripts/smoke_broker_sso.sh with the
+# token from `openscope agent token mint --trusted-proxy`. In a real
+# deployment, render this from your secrets store and keep nginx on a private
+# segment with the broker (only the proxy should reach the broker's port).
+events {}
+
+http {
+  server {
+    listen 80;
+
+    location / {
+      proxy_set_header Authorization "Bearer __PROXY_TOKEN__";
+      proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
+      proxy_set_header X-Forwarded-Groups $http_x_forwarded_groups;
+      proxy_pass http://broker:8443;
+    }
+  }
+}

@@ -38,3 +38,6 @@ docs/*.pdf
 # Live droplet infra (private). deploy/broker and router/deploy ARE tracked.
 /deploy/docker-compose-openscope.yml
 /deploy/traefik/
+
+# SSO smoke working dir — generated keys, tokens, rendered nginx.conf.
+/deploy/broker/sso/.smoke/
