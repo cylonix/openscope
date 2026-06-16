@@ -1071,34 +1071,64 @@ func runAgentToken(paths config.Paths, args []string) int {
 
 	switch args[0] {
 	case "mint":
-		rest := args[1:]
 		rotate := false
-		if len(rest) > 0 && rest[0] == "--rotate" {
-			rotate = true
-			rest = rest[1:]
+		trustedProxy := false
+		userSubject := ""
+		var positionals []string
+		rest := args[1:]
+		for i := 0; i < len(rest); i++ {
+			switch {
+			case rest[i] == "--rotate":
+				rotate = true
+			case rest[i] == "--trusted-proxy":
+				trustedProxy = true
+			case rest[i] == "--user":
+				if i+1 >= len(rest) {
+					output.WriteErrorf("--user requires a value")
+					return daemon.ExitInvalid
+				}
+				i++
+				userSubject = rest[i]
+			case strings.HasPrefix(rest[i], "--user="):
+				userSubject = strings.TrimPrefix(rest[i], "--user=")
+			default:
+				positionals = append(positionals, rest[i])
+			}
 		}
-		if len(rest) != 1 {
-			output.WriteErrorf("usage: openscope agent token mint [--rotate] <agent_id>")
+		if len(positionals) != 1 {
+			output.WriteErrorf("usage: openscope agent token mint [--rotate] [--user <subject>] [--trusted-proxy] <agent_id>")
 			return daemon.ExitInvalid
 		}
-		agentID := rest[0]
+		agentID := positionals[0]
 		// Minting implies the agent may act — register it like `agent register`.
 		if _, _, err := agent.Register(paths, agentID); err != nil {
 			output.WriteErrorf("register agent: %v", err)
 			return daemon.ExitConfigError
 		}
-		token, err := store.Mint(agentID, rotate)
+		token, err := store.MintWith(authtoken.MintOptions{
+			Agent:        agentID,
+			User:         userSubject,
+			TrustedProxy: trustedProxy,
+			Rotate:       rotate,
+		})
 		if err != nil {
 			output.WriteErrorf("mint token: %v", err)
 			return daemon.ExitConfigError
 		}
-		return writeJSON(map[string]any{
+		out := map[string]any{
 			"ok":    true,
 			"agent": agentID,
 			// Shown exactly once — only the HMAC hash is stored.
 			"token": token,
 			"note":  "store this token now; it cannot be recovered later",
-		})
+		}
+		if userSubject != "" {
+			out["user"] = userSubject
+		}
+		if trustedProxy {
+			out["trusted_proxy"] = true
+		}
+		return writeJSON(out)
 	case "list":
 		rows, err := store.List()
 		if err != nil {
@@ -1106,14 +1136,16 @@ func runAgentToken(paths config.Paths, args []string) int {
 			return daemon.ExitConfigError
 		}
 		type tokenInfo struct {
-			Agent     string `json:"agent"`
-			Prefix    string `json:"prefix"`
-			CreatedAt string `json:"created_at"`
-			RevokedAt string `json:"revoked_at,omitempty"`
+			Agent        string `json:"agent"`
+			User         string `json:"user,omitempty"`
+			TrustedProxy bool   `json:"trusted_proxy,omitempty"`
+			Prefix       string `json:"prefix"`
+			CreatedAt    string `json:"created_at"`
+			RevokedAt    string `json:"revoked_at,omitempty"`
 		}
 		out := make([]tokenInfo, 0, len(rows))
 		for _, row := range rows {
-			info := tokenInfo{Agent: row.Agent, Prefix: row.Prefix, CreatedAt: row.CreatedAt.Format(time.RFC3339)}
+			info := tokenInfo{Agent: row.Agent, User: row.User, TrustedProxy: row.TrustedProxy, Prefix: row.Prefix, CreatedAt: row.CreatedAt.Format(time.RFC3339)}
 			if row.RevokedAt != nil {
 				info.RevokedAt = row.RevokedAt.Format(time.RFC3339)
 			}

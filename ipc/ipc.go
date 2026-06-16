@@ -46,6 +46,15 @@ type Request struct {
 	Agent  string            `json:"agent"`
 	Params map[string]string `json:"params,omitempty"`
 	Mode   string            `json:"mode,omitempty"`
+
+	// User and Groups identify the authenticated human (or service account)
+	// on whose behalf the agent acts, distinct from the agent (the tool).
+	// Over the HTTP listener the daemon SETS these from the verified source
+	// (an SSO proxy's forwarded header, or a per-user token's bound subject)
+	// and overwrites any client-supplied value — never trust them off the
+	// wire. On the local Unix socket they are advisory, like the agent field.
+	User   string   `json:"user,omitempty"`
+	Groups []string `json:"groups,omitempty"`
 }
 
 type Response struct {

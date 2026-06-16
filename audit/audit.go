@@ -20,6 +20,15 @@ type Event struct {
 	Result    string            `json:"result"`
 	Reason    string            `json:"reason,omitempty"`
 
+	// Human attribution: the authenticated user (and their groups) on whose
+	// behalf the agent acted, and how that identity was established. Empty for
+	// plain agent tokens / unauthenticated local calls. AuthMethod is one of
+	// "proxy" (SSO reverse proxy), "token" (per-user bearer token), or "unix"
+	// (local socket).
+	User       string   `json:"user,omitempty"`
+	Groups     []string `json:"groups,omitempty"`
+	AuthMethod string   `json:"auth_method,omitempty"`
+
 	// Network-transport context, set when the request arrived over the
 	// daemon's HTTP listener (empty for the local Unix socket — the JSONL
 	// shape is unchanged for existing local deployments).

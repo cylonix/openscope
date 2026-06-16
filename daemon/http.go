@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/openscope/openscope/audit"
@@ -36,6 +37,14 @@ type HTTPServer struct {
 	AllowAnon    bool
 	MaxBodyBytes int64
 	Limiter      *rateLimiter
+
+	// SSO reverse-proxy trust. When TrustProxy is set, a request bearing a
+	// trusted-proxy token may assert a verified user via ProxyUserHeader (and
+	// groups via ProxyGroupsHeader). Header trust is gated on the token's
+	// trusted_proxy capability — a normal token's user headers are ignored.
+	TrustProxy        bool
+	ProxyUserHeader   string
+	ProxyGroupsHeader string
 }
 
 // NewHTTPServer builds the listener from Paths, loading the token pepper
@@ -46,11 +55,14 @@ func NewHTTPServer(service Service, paths config.Paths) (*HTTPServer, error) {
 		return nil, fmt.Errorf("load token pepper: %w", err)
 	}
 	return &HTTPServer{
-		Service:      service,
-		Tokens:       &authtoken.FileStore{Path: paths.AgentTokensFile, Pepper: pepper},
-		AllowAnon:    paths.HTTPAllowAnon,
-		MaxBodyBytes: 1 << 20, // 1 MiB — action requests are small JSON
-		Limiter:      newRateLimiter(10, 30),
+		Service:           service,
+		Tokens:            &authtoken.FileStore{Path: paths.AgentTokensFile, Pepper: pepper},
+		AllowAnon:         paths.HTTPAllowAnon,
+		MaxBodyBytes:      1 << 20, // 1 MiB — action requests are small JSON
+		Limiter:           newRateLimiter(10, 30),
+		TrustProxy:        paths.HTTPTrustProxy,
+		ProxyUserHeader:   paths.HTTPProxyUserHeader,
+		ProxyGroupsHeader: paths.HTTPProxyGroupsHeader,
 	}, nil
 }
 
@@ -153,8 +165,13 @@ func (hs *HTTPServer) handleActions(w http.ResponseWriter, r *http.Request) {
 		RemoteAddr: r.RemoteAddr,
 	}
 
-	// --- Authenticate: agent identity comes from the token ---------------
+	// --- Authenticate -----------------------------------------------------
+	// Normal token: the agent (and any bound user) comes FROM the token.
+	// Trusted-proxy token: the agent stays advisory (request body) and the
+	// verified user comes from the proxy-forwarded header.
 	agentID := ""
+	var verifiedUser string
+	var verifiedGroups []string
 	authHeader := r.Header.Get("Authorization")
 	switch {
 	case authHeader != "":
@@ -165,16 +182,35 @@ func (hs *HTTPServer) handleActions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		meta.TokenPrefix = token[:authtoken.PrefixLen]
-		resolved, err := hs.Tokens.Resolve(token)
+		res, err := hs.Tokens.ResolveFull(token)
 		if err != nil {
 			hs.auditAuthFailure(meta, "", "invalid_token", "token did not resolve to an agent")
 			writeHTTPResponse(w, errorResponse(ExitDenied, "invalid or revoked token"))
 			return
 		}
-		agentID = resolved
+		if res.TrustedProxy && hs.TrustProxy {
+			// SSO proxy: trust the verified-user header it forwarded. The proxy
+			// authenticated the human against the customer's IdP; this token is
+			// the trust anchor, so the daemon never validates an IdP JWT itself.
+			meta.AuthMethod = "proxy"
+			verifiedUser = strings.TrimSpace(r.Header.Get(hs.ProxyUserHeader))
+			verifiedGroups = parseProxyGroups(r.Header.Get(hs.ProxyGroupsHeader))
+			if verifiedUser == "" {
+				hs.auditAuthFailure(meta, "", "missing_proxy_user", "trusted-proxy request carried no verified user header")
+				writeHTTPResponse(w, errorResponse(ExitDenied, "trusted-proxy request missing verified user identity"))
+				return
+			}
+		} else {
+			// Normal bearer token: identity is the token's agent plus any user
+			// subject bound at mint time. A forwarded user header is ignored.
+			agentID = res.Agent
+			verifiedUser = res.User
+			meta.AuthMethod = "token"
+		}
 	case hs.AllowAnon:
-		// Legacy localhost bridge: the request's own agent field is used,
-		// exactly like the Unix socket path.
+		// Legacy localhost bridge: the request's own agent/user fields are
+		// used, exactly like the Unix socket path.
+		meta.AuthMethod = "anon"
 	default:
 		hs.auditAuthFailure(meta, "", "missing_token", "no Authorization header")
 		w.Header().Set("WWW-Authenticate", `Bearer realm="openscoped"`)
@@ -218,6 +254,16 @@ func (hs *HTTPServer) handleActions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// --- Bind user identity ----------------------------------------------
+	// For token and proxy auth the user/groups are server-authoritative —
+	// overwrite anything the client put in the body so it can never assert an
+	// identity off the wire. The anon bridge keeps the body's advisory values
+	// (loopback-only, like the Unix socket).
+	if meta.AuthMethod != "anon" {
+		request.User = verifiedUser
+		request.Groups = verifiedGroups
+	}
+
 	response := hs.Service.HandleWithMeta(request, meta)
 	writeHTTPResponse(w, response)
 }
@@ -258,6 +304,22 @@ func newRequestID() string {
 		return "rid-rand-unavailable"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// parseProxyGroups splits a proxy-forwarded groups header into a clean list.
+// oauth2-proxy and similar proxies send groups comma-separated (e.g.
+// "sre,oncall"); empty entries and surrounding whitespace are dropped.
+func parseProxyGroups(header string) []string {
+	if strings.TrimSpace(header) == "" {
+		return nil
+	}
+	var groups []string
+	for _, g := range strings.Split(header, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			groups = append(groups, g)
+		}
+	}
+	return groups
 }
 
 func remoteIP(remoteAddr string) string {

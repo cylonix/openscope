@@ -83,7 +83,7 @@ func TestEvaluateDenyOverridesAllow(t *testing.T) {
 		},
 	}
 
-	decision := Evaluate(pf, def, "read_note", "demo", map[string]string{
+	decision := Evaluate(pf, def, "read_note", Principal{Agent: "demo"}, map[string]string{
 		"folder": "Work",
 		"note":   "Secret",
 	})
@@ -112,7 +112,7 @@ func TestEvaluateRequiresMatchingAllow(t *testing.T) {
 		},
 	}
 
-	decision := Evaluate(pf, def, "read_note", "demo", map[string]string{
+	decision := Evaluate(pf, def, "read_note", Principal{Agent: "demo"}, map[string]string{
 		"folder": "Personal",
 	})
 
@@ -140,11 +140,116 @@ func TestEvaluatePassthroughAppIgnoresParameterConstraints(t *testing.T) {
 		},
 	}
 
-	decision := Evaluate(pf, def, "list_events", "openclaw", map[string]string{
+	decision := Evaluate(pf, def, "list_events", Principal{Agent: "openclaw"}, map[string]string{
 		"calendar": "Personal",
 	})
 
 	if !decision.Allowed {
 		t.Fatalf("expected passthrough app allow rule without constraints to match, got deny: %s", decision.Reason)
+	}
+}
+
+// sshDef is a minimal ssh app definition for principal-matching tests: one
+// action with a target param used as a policy constraint.
+func sshDef() appdef.Definition {
+	return appdef.Definition{
+		App: appdef.App{Name: "ssh"},
+		Actions: map[string]appdef.Action{
+			"restart_service": {
+				Parameters: []appdef.Parameter{
+					{Name: "target", PolicyKey: "target"},
+				},
+			},
+		},
+	}
+}
+
+func TestEvaluateUserScopedRule(t *testing.T) {
+	def := sshDef()
+	pf := File{Version: 1, Rules: []Rule{
+		// No agent selector: any agent acting as alice@corp may restart prod-api.
+		{Effect: "allow", User: "alice@corp", App: "ssh", Action: "restart_service",
+			Constraints: map[string]string{"target": "prod-api"}},
+	}}
+
+	// alice, allowed target → allowed regardless of which agent.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{Agent: "claude-code", User: "alice@corp"},
+		map[string]string{"target": "prod-api"}); !d.Allowed {
+		t.Fatalf("alice on prod-api should be allowed: %s", d.Reason)
+	}
+	// bob, same target → no matching allow.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{Agent: "claude-code", User: "bob@corp"},
+		map[string]string{"target": "prod-api"}); d.Allowed {
+		t.Fatalf("bob should not match alice's rule")
+	}
+	// alice, different target → constraint mismatch.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{Agent: "claude-code", User: "alice@corp"},
+		map[string]string{"target": "staging"}); d.Allowed {
+		t.Fatalf("alice on staging should not match prod-api constraint")
+	}
+}
+
+func TestEvaluateGroupScopedRule(t *testing.T) {
+	def := sshDef()
+	pf := File{Version: 1, Rules: []Rule{
+		{Effect: "allow", Groups: []string{"sre"}, App: "ssh", Action: "restart_service"},
+	}}
+
+	// Principal in the sre group (among others) → allowed.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{User: "alice@corp", Groups: []string{"oncall", "sre"}}, nil); !d.Allowed {
+		t.Fatalf("sre member should be allowed: %s", d.Reason)
+	}
+	// Principal not in any listed group → denied.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{User: "bob@corp", Groups: []string{"interns"}}, nil); d.Allowed {
+		t.Fatalf("non-sre member should be denied")
+	}
+}
+
+func TestEvaluateDenyOverridesUserAllow(t *testing.T) {
+	def := sshDef()
+	pf := File{Version: 1, Rules: []Rule{
+		{Effect: "allow", Groups: []string{"sre"}, App: "ssh", Action: "restart_service"},
+		// A targeted deny on one user wins even though the group allow matches.
+		{Effect: "deny", User: "alice@corp", App: "ssh", Action: "restart_service"},
+	}}
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{User: "alice@corp", Groups: []string{"sre"}}, nil); d.Allowed {
+		t.Fatalf("deny on alice must override the group allow")
+	}
+	// A different sre member is still allowed.
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{User: "carol@corp", Groups: []string{"sre"}}, nil); !d.Allowed {
+		t.Fatalf("carol should still be allowed: %s", d.Reason)
+	}
+}
+
+func TestEvaluateAgentRuleIgnoresUser(t *testing.T) {
+	// A legacy agent-only rule (no user/groups) keeps matching regardless of the
+	// authenticated user — backward compatibility for existing policies.
+	def := sshDef()
+	pf := File{Version: 1, Rules: []Rule{
+		{Effect: "allow", Agent: "ci-runner", App: "ssh", Action: "restart_service"},
+	}}
+	if d := Evaluate(pf, def, "restart_service",
+		Principal{Agent: "ci-runner", User: "whoever@corp"}, nil); !d.Allowed {
+		t.Fatalf("agent-only rule should match any user: %s", d.Reason)
+	}
+}
+
+func TestValidateRequiresPrincipalSelector(t *testing.T) {
+	// app+action but no agent/user/groups → invalid (would match everything).
+	bad := File{Version: 1, Rules: []Rule{{Effect: "allow", App: "ssh", Action: "restart_service"}}}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("expected a rule with no principal selector to be invalid")
+	}
+	// A user-only rule is valid.
+	ok := File{Version: 1, Rules: []Rule{{Effect: "allow", User: "alice@corp", App: "ssh", Action: "restart_service"}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("user-only rule should be valid: %v", err)
 	}
 }

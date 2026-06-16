@@ -54,13 +54,24 @@ type Service struct {
 	meta RequestMeta
 }
 
-// RequestMeta is transport context recorded on audit events. Empty for
-// local Unix-socket requests.
+// RequestMeta is transport + authentication context recorded on audit events.
+// Empty for local Unix-socket requests.
 type RequestMeta struct {
 	RequestID   string
 	Transport   string // "unix" | "http"
 	RemoteAddr  string
 	TokenPrefix string
+
+	// AuthMethod records how the principal was authenticated: "proxy" (SSO
+	// reverse proxy), "token" (bearer token), "anon" (legacy localhost
+	// bridge), or "" → defaulted to "unix" in Handle for local-socket calls.
+	AuthMethod string
+
+	// User and Groups mirror the request principal, copied here in Handle so
+	// recordAudit can attribute every event to the human without threading the
+	// request through each audit call site.
+	User   string
+	Groups []string
 }
 
 func NewService(paths config.Paths) Service {
@@ -80,6 +91,15 @@ func (s Service) HandleWithMeta(request ipc.Request, meta RequestMeta) ipc.Respo
 func (s Service) Handle(request ipc.Request) ipc.Response {
 	if request.App == "" || request.Action == "" || request.Agent == "" {
 		return ipc.Response{OK: false, Error: "app, action, and agent are required", ExitCode: ExitInvalid}
+	}
+
+	// Mirror the request principal onto meta so every audit event this request
+	// produces is attributed to the human. A local Unix-socket call has no
+	// AuthMethod set by a transport layer — default it to "unix".
+	s.meta.User = request.User
+	s.meta.Groups = request.Groups
+	if s.meta.AuthMethod == "" {
+		s.meta.AuthMethod = "unix"
 	}
 
 	// Built-in operator verification: read a brokered target's authorized_keys via the
@@ -172,7 +192,8 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		return ipc.Response{OK: false, Error: fmt.Sprintf("load policy: %v", err), ExitCode: ExitConfigError}
 	}
 
-	decision := policy.Evaluate(pf, entry.Definition, request.Action, request.Agent, request.Params)
+	decision := policy.Evaluate(pf, entry.Definition, request.Action,
+		policy.Principal{Agent: request.Agent, User: request.User, Groups: request.Groups}, request.Params)
 	if !decision.Allowed {
 		s.recordAudit(audit.Event{
 			Timestamp: time.Now().UTC(),
@@ -376,6 +397,9 @@ func (s Service) recordAudit(event audit.Event) {
 	event.Transport = s.meta.Transport
 	event.RemoteAddr = s.meta.RemoteAddr
 	event.TokenPrefix = s.meta.TokenPrefix
+	event.User = s.meta.User
+	event.Groups = s.meta.Groups
+	event.AuthMethod = s.meta.AuthMethod
 	_ = audit.Append(s.Paths.AuditFile, event)
 
 	// Control-plane metering: the audit event minus params (metadata only).

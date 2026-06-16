@@ -243,3 +243,46 @@ func TestLoadPepper(t *testing.T) {
 		t.Errorf("pepper file mode = %o, want 600", perm)
 	}
 }
+
+func TestFileStoreMintWithUserAndProxy(t *testing.T) {
+	s := newTestStore(t)
+
+	// Per-user token: a bound subject travels with the token.
+	userTok, err := s.MintWith(MintOptions{Agent: "ci", User: "ci@corp"})
+	if err != nil {
+		t.Fatalf("MintWith user: %v", err)
+	}
+	res, err := s.ResolveFull(userTok)
+	if err != nil {
+		t.Fatalf("ResolveFull user: %v", err)
+	}
+	if res.Agent != "ci" || res.User != "ci@corp" || res.TrustedProxy {
+		t.Fatalf("ResolveFull = %+v, want agent=ci user=ci@corp proxy=false", res)
+	}
+
+	// Trusted-proxy token: capability flag is set, no bound user.
+	proxyTok, err := s.MintWith(MintOptions{Agent: "sso-proxy", TrustedProxy: true})
+	if err != nil {
+		t.Fatalf("MintWith proxy: %v", err)
+	}
+	res, err = s.ResolveFull(proxyTok)
+	if err != nil {
+		t.Fatalf("ResolveFull proxy: %v", err)
+	}
+	if res.Agent != "sso-proxy" || !res.TrustedProxy || res.User != "" {
+		t.Fatalf("ResolveFull = %+v, want agent=sso-proxy proxy=true user empty", res)
+	}
+
+	// Plain Mint stays a plain agent token (no user, no proxy capability).
+	plain, err := s.Mint("agent-x", false)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	res, err = s.ResolveFull(plain)
+	if err != nil {
+		t.Fatalf("ResolveFull plain: %v", err)
+	}
+	if res.User != "" || res.TrustedProxy {
+		t.Fatalf("plain token carried identity it should not: %+v", res)
+	}
+}

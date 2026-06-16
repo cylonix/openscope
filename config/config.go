@@ -103,6 +103,16 @@ type Paths struct {
 	HTTPAllowAnon   bool   // OPENSCOPE_HTTP_ALLOW_ANON — legacy localhost bridge
 	HTTPPlaintextOK bool   // OPENSCOPE_HTTP_PLAINTEXT_OK — TLS terminated upstream
 
+	// SSO reverse-proxy trust (enterprise human auth). When HTTPTrustProxy is
+	// set, a request bearing a trusted-proxy token may assert a verified user
+	// identity via the configured headers — the proxy authenticated the human
+	// against the customer's IdP (oauth2-proxy, ALB OIDC, IAP). The daemon
+	// never validates IdP JWTs itself; the trusted-proxy token is the trust
+	// anchor. Header trust applies only to trusted-proxy tokens, always.
+	HTTPTrustProxy        bool   // OPENSCOPE_HTTP_TRUST_PROXY
+	HTTPProxyUserHeader   string // OPENSCOPE_HTTP_PROXY_USER_HEADER (default X-Forwarded-Email)
+	HTTPProxyGroupsHeader string // OPENSCOPE_HTTP_PROXY_GROUPS_HEADER (default X-Forwarded-Groups)
+
 	// Agent token store (daemon side). Pepper: env wins, else the pepper
 	// file (auto-generated on first mint — losing it invalidates every
 	// minted token).
@@ -165,6 +175,9 @@ func DefaultPaths() (Paths, error) {
 	paths.HTTPTLSKeyFile = os.Getenv("OPENSCOPE_HTTP_TLS_KEY")
 	paths.HTTPAllowAnon = envBool("OPENSCOPE_HTTP_ALLOW_ANON")
 	paths.HTTPPlaintextOK = envBool("OPENSCOPE_HTTP_PLAINTEXT_OK")
+	paths.HTTPTrustProxy = envBool("OPENSCOPE_HTTP_TRUST_PROXY")
+	paths.HTTPProxyUserHeader = envOrDefault("OPENSCOPE_HTTP_PROXY_USER_HEADER", "X-Forwarded-Email")
+	paths.HTTPProxyGroupsHeader = envOrDefault("OPENSCOPE_HTTP_PROXY_GROUPS_HEADER", "X-Forwarded-Groups")
 	paths.AgentTokensFile = filepath.Join(configDir, "agent_tokens.yaml")
 	paths.TokenPepperFile = filepath.Join(configDir, "token_pepper")
 	paths.AuthPepper = os.Getenv("OPENSCOPE_AUTH_PEPPER")
@@ -172,6 +185,13 @@ func DefaultPaths() (Paths, error) {
 	paths.ClientCAFile = os.Getenv("OPENSCOPE_HTTP_CA")
 
 	return paths, nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func envBool(key string) bool {

@@ -35,6 +35,34 @@ type TokenRow struct {
 	Hash      string     `yaml:"hash"` // base64(HMAC-SHA256(pepper, token))
 	CreatedAt time.Time  `yaml:"created_at"`
 	RevokedAt *time.Time `yaml:"revoked_at,omitempty"`
+
+	// User is the human (or service-account) subject this token authenticates,
+	// when known at mint time — the no-IdP path where each developer/CI gets a
+	// per-user token. Empty for plain agent tokens (identity is the agent only).
+	User string `yaml:"user,omitempty"`
+
+	// TrustedProxy marks a token held by an SSO reverse proxy (oauth2-proxy,
+	// ALB OIDC, IAP). Only a request bearing such a token may assert a user
+	// identity via a forwarded header; the daemon derives the verified user
+	// from that header instead of from this row. Keeps OIDC crypto in the
+	// proxy and the broker dependency-clean (no JWT/JWKS libraries).
+	TrustedProxy bool `yaml:"trusted_proxy,omitempty"`
+}
+
+// Resolution is the full identity a presented token resolves to.
+type Resolution struct {
+	Agent        string
+	User         string
+	TrustedProxy bool
+}
+
+// MintOptions parameterizes MintWith. Agent is required; User binds a human
+// subject (per-user tokens); TrustedProxy grants the proxy capability.
+type MintOptions struct {
+	Agent        string
+	User         string
+	TrustedProxy bool
+	Rotate       bool
 }
 
 var (
@@ -79,7 +107,14 @@ func (s *FileStore) save(doc fileStoreDoc) error {
 // active token, Mint fails unless rotate is true, in which case the old
 // token is revoked first.
 func (s *FileStore) Mint(agentID string, rotate bool) (string, error) {
-	if strings.TrimSpace(agentID) == "" {
+	return s.MintWith(MintOptions{Agent: agentID, Rotate: rotate})
+}
+
+// MintWith creates a token carrying the full identity in opts. Like Mint, an
+// agent's existing active token blocks the call unless opts.Rotate revokes it
+// first. The bound user and trusted-proxy capability persist on the row.
+func (s *FileStore) MintWith(opts MintOptions) (string, error) {
+	if strings.TrimSpace(opts.Agent) == "" {
 		return "", errors.New("agent id must be non-empty")
 	}
 	doc, err := s.load()
@@ -89,8 +124,8 @@ func (s *FileStore) Mint(agentID string, rotate bool) (string, error) {
 	now := time.Now().UTC()
 	for i := range doc.Tokens {
 		row := &doc.Tokens[i]
-		if row.Agent == agentID && row.RevokedAt == nil {
-			if !rotate {
+		if row.Agent == opts.Agent && row.RevokedAt == nil {
+			if !opts.Rotate {
 				return "", ErrTokenExists
 			}
 			row.RevokedAt = &now
@@ -101,10 +136,12 @@ func (s *FileStore) Mint(agentID string, rotate bool) (string, error) {
 		return "", err
 	}
 	doc.Tokens = append(doc.Tokens, TokenRow{
-		Agent:     agentID,
-		Prefix:    prefix,
-		Hash:      base64.StdEncoding.EncodeToString(hash),
-		CreatedAt: now,
+		Agent:        opts.Agent,
+		Prefix:       prefix,
+		Hash:         base64.StdEncoding.EncodeToString(hash),
+		CreatedAt:    now,
+		User:         strings.TrimSpace(opts.User),
+		TrustedProxy: opts.TrustedProxy,
 	})
 	if err := s.save(doc); err != nil {
 		return "", err
@@ -112,21 +149,33 @@ func (s *FileStore) Mint(agentID string, rotate bool) (string, error) {
 	return token, nil
 }
 
-// Resolve maps a presented token to its agent ID. It compares every
-// prefix-matching candidate to keep timing oblivious across the
-// {match-on-1st, match-on-Nth, no-match} cases. Revoked rows never match.
+// Resolve maps a presented token to its agent ID. Retained for callers that
+// only need the agent; see ResolveFull for the bound user and proxy capability.
 func (s *FileStore) Resolve(token string) (string, error) {
-	if len(token) < PrefixLen || !strings.HasPrefix(token, "osk_") {
-		return "", ErrInvalidToken
-	}
-	doc, err := s.load()
+	res, err := s.ResolveFull(token)
 	if err != nil {
 		return "", err
 	}
+	return res.Agent, nil
+}
+
+// ResolveFull maps a presented token to its full identity (agent, bound user,
+// trusted-proxy capability). It compares every prefix-matching candidate to
+// keep timing oblivious across the {match-on-1st, match-on-Nth, no-match}
+// cases. Revoked rows never match.
+func (s *FileStore) ResolveFull(token string) (Resolution, error) {
+	if len(token) < PrefixLen || !strings.HasPrefix(token, "osk_") {
+		return Resolution{}, ErrInvalidToken
+	}
+	doc, err := s.load()
+	if err != nil {
+		return Resolution{}, err
+	}
 	expected := HashToken(token, s.Pepper)
 	prefix := token[:PrefixLen]
-	matched := ""
-	for _, row := range doc.Tokens {
+	var matched *TokenRow
+	for i := range doc.Tokens {
+		row := doc.Tokens[i]
 		if row.Prefix != prefix || row.RevokedAt != nil {
 			continue
 		}
@@ -134,14 +183,15 @@ func (s *FileStore) Resolve(token string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if hmac.Equal(expected, hash) && matched == "" {
-			matched = row.Agent
+		if hmac.Equal(expected, hash) && matched == nil {
+			rowCopy := row
+			matched = &rowCopy
 		}
 	}
-	if matched == "" {
-		return "", ErrInvalidToken
+	if matched == nil {
+		return Resolution{}, ErrInvalidToken
 	}
-	return matched, nil
+	return Resolution{Agent: matched.Agent, User: matched.User, TrustedProxy: matched.TrustedProxy}, nil
 }
 
 // Revoke marks all active tokens matching the agent ID or token prefix as

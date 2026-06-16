@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/config"
@@ -20,11 +21,26 @@ type File struct {
 }
 
 type Rule struct {
-	Effect      string            `yaml:"effect"`
-	Agent       string            `yaml:"agent"`
+	Effect string `yaml:"effect"`
+	// Principal selectors. An empty selector is a wildcard; a set selector must
+	// match the request principal. A rule must set at least one of Agent, User,
+	// or Groups (see Validate) so it always names who it applies to.
+	Agent  string   `yaml:"agent,omitempty"`
+	User   string   `yaml:"user,omitempty"`
+	Groups []string `yaml:"groups,omitempty"`
+
 	App         string            `yaml:"app"`
 	Action      string            `yaml:"action"`
 	Constraints map[string]string `yaml:"constraints"`
+}
+
+// Principal is the authenticated identity a request is evaluated against: the
+// agent (the acting tool) plus the user/groups (the human, when authenticated
+// via an SSO proxy or a per-user token).
+type Principal struct {
+	Agent  string
+	User   string
+	Groups []string
 }
 
 type Decision struct {
@@ -155,7 +171,10 @@ func RemoveRules(paths config.Paths, predicate func(Rule) bool) (File, int, erro
 }
 
 func rulesEqual(a, b Rule) bool {
-	if a.Effect != b.Effect || a.Agent != b.Agent || a.App != b.App || a.Action != b.Action {
+	if a.Effect != b.Effect || a.Agent != b.Agent || a.User != b.User || a.App != b.App || a.Action != b.Action {
+		return false
+	}
+	if !equalStringSets(a.Groups, b.Groups) {
 		return false
 	}
 	if len(a.Constraints) != len(b.Constraints) {
@@ -169,6 +188,22 @@ func rulesEqual(a, b Rule) bool {
 	return true
 }
 
+// equalStringSets reports whether a and b contain the same elements,
+// regardless of order or duplicates.
+func equalStringSets(a, b []string) bool {
+	set := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		set[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := set[v]; !ok {
+			return false
+		}
+		delete(set, v)
+	}
+	return len(set) == 0
+}
+
 func (f File) Validate() error {
 	if f.Version == 0 {
 		return fmt.Errorf("policy version is required")
@@ -178,15 +213,20 @@ func (f File) Validate() error {
 		if rule.Effect != "allow" && rule.Effect != "deny" {
 			return fmt.Errorf("rule %d has invalid effect %q", i, rule.Effect)
 		}
-		if rule.Agent == "" || rule.App == "" || rule.Action == "" {
-			return fmt.Errorf("rule %d must set agent, app, and action", i)
+		if rule.App == "" || rule.Action == "" {
+			return fmt.Errorf("rule %d must set app and action", i)
+		}
+		// A rule must name a principal — at least one of agent, user, or
+		// group — so it can never match every request indiscriminately.
+		if rule.Agent == "" && rule.User == "" && len(rule.Groups) == 0 {
+			return fmt.Errorf("rule %d must set at least one of agent, user, or groups", i)
 		}
 	}
 
 	return nil
 }
 
-func Evaluate(policyFile File, def appdef.Definition, actionName, agentID string, params map[string]string) Decision {
+func Evaluate(policyFile File, def appdef.Definition, actionName string, principal Principal, params map[string]string) Decision {
 	if _, ok := def.Action(actionName); !ok {
 		return Decision{Allowed: false, Reason: "unknown action"}
 	}
@@ -196,7 +236,10 @@ func Evaluate(policyFile File, def appdef.Definition, actionName, agentID string
 
 	for i := range policyFile.Rules {
 		rule := policyFile.Rules[i]
-		if rule.Agent != agentID || rule.App != def.App.Name || rule.Action != actionName {
+		if rule.App != def.App.Name || rule.Action != actionName {
+			continue
+		}
+		if !matchesPrincipal(rule, principal) {
 			continue
 		}
 		if !matches(rule.Constraints, context) {
@@ -227,6 +270,32 @@ func Evaluate(policyFile File, def appdef.Definition, actionName, agentID string
 		Allowed: false,
 		Reason:  "no matching allow rule",
 	}
+}
+
+// matchesPrincipal reports whether the rule's principal selectors all match
+// the request principal. An empty selector is a wildcard; a set Agent or User
+// must match exactly; a set Groups list matches when the principal belongs to
+// at least one of the listed groups.
+func matchesPrincipal(rule Rule, principal Principal) bool {
+	if rule.Agent != "" && rule.Agent != principal.Agent {
+		return false
+	}
+	if rule.User != "" && rule.User != principal.User {
+		return false
+	}
+	if len(rule.Groups) > 0 && !anyGroupMatches(rule.Groups, principal.Groups) {
+		return false
+	}
+	return true
+}
+
+func anyGroupMatches(ruleGroups, principalGroups []string) bool {
+	for _, rg := range ruleGroups {
+		if slices.Contains(principalGroups, rg) {
+			return true
+		}
+	}
+	return false
 }
 
 func matches(constraints, context map[string]string) bool {
