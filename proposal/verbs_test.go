@@ -6,6 +6,8 @@ package proposal
 import (
 	"strings"
 	"testing"
+
+	"github.com/openscope/openscope/admin"
 )
 
 func findingByRule(findings []Finding, ruleID string) (Finding, bool) {
@@ -211,14 +213,14 @@ apps:
       actions:
         x: {description: d, parameters: [{name: a, type: string}], script: foo}
 `,
-		"non-ssh executor": `
+		"unsupported executor": `
 version: 1
 kind: openscope-proposal
 metadata: {name: t}
 apps:
   add:
     - version: 1
-      app: {name: custom, executor: system}
+      app: {name: custom, executor: applescript}
       actions:
         x: {description: d, parameters: [{name: a, type: string}], command: "echo {a}"}
 `,
@@ -227,5 +229,158 @@ apps:
 		if _, err := Parse([]byte(src), "t.yaml"); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+// A clean custom system (sudo) verb is acknowledge-to-apply (not blocked), and
+// the acknowledgment renders the worst-case command with each <param> marked.
+func TestSystemCustomVerbAcknowledged(t *testing.T) {
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+apps:
+  add:
+    - version: 1
+      app: {name: system, executor: system}
+      actions:
+        restart_fleet:
+          description: restart the fleet agent
+          parameters: [{name: host, type: string}]
+          command: "/usr/local/bin/fleetctl restart {host}"
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: restart_fleet}
+`
+	p := parse(t, src)
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), DefaultBounds(), "d", MachineInfo{HomeDir: "/nh"})
+	f, ok := findingByRule(plan.Findings, "SYS-CUSTOM-VERB")
+	if !ok {
+		t.Fatal("expected SYS-CUSTOM-VERB for a custom system verb")
+	}
+	if !strings.Contains(f.Summary, "/usr/local/bin/fleetctl restart <host>") {
+		t.Errorf("worst-case command not rendered: %q", f.Summary)
+	}
+	if plan.Blocked {
+		t.Error("a clean custom system verb must be acknowledge-to-apply, not blocked")
+	}
+	if _, ok := findingByRule(plan.Acknowledge, "SYS-CUSTOM-VERB"); !ok {
+		t.Error("SYS-CUSTOM-VERB must require acknowledgment")
+	}
+}
+
+// A generic-runner system verb is hard-blocked (SYS-SHELL-PASSTHROUGH) — no
+// acknowledgment escape, regardless of bounds.
+func TestSystemPassthroughBlocks(t *testing.T) {
+	cases := map[string]string{
+		"program is a param":  "{prog} --do-it",
+		"shell -c":            "/bin/bash -c {script}",
+		"interpreter program": "/usr/bin/python3 {script}",
+		"not absolute":        "fleetctl {host}",
+	}
+	for name, cmd := range cases {
+		src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+apps:
+  add:
+    - version: 1
+      app: {name: system, executor: system}
+      actions:
+        danger:
+          description: d
+          parameters: [{name: prog, type: string}, {name: script, type: string}, {name: host, type: string}]
+          command: "` + cmd + `"
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: danger}
+`
+		p := parse(t, src)
+		plan := BuildPlan(p, LiveState{}, minimalDefs(), DefaultBounds(), "d", MachineInfo{HomeDir: "/nh"})
+		if _, ok := findingByRule(plan.Findings, "SYS-SHELL-PASSTHROUGH"); !ok {
+			t.Fatalf("%s: expected SYS-SHELL-PASSTHROUGH", name)
+		}
+		if !plan.Blocked {
+			t.Errorf("%s: a generic-runner system verb must block apply", name)
+		}
+	}
+}
+
+// A privileged custom verb whose program is a general-purpose file writer is
+// hard-blocked (SYS-SELF-GOVERN) — it could overwrite OpenScope's own config.
+func TestSystemSelfGovernBlocks(t *testing.T) {
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+apps:
+  add:
+    - version: 1
+      app: {name: system, executor: system}
+      actions:
+        write_any:
+          description: d
+          parameters: [{name: path, type: string, constraint: path}]
+          command: "/usr/bin/tee {path}"
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: write_any}
+`
+	p := parse(t, src)
+	plan := BuildPlan(p, LiveState{}, minimalDefs(), DefaultBounds(), "d", MachineInfo{HomeDir: "/nh"})
+	if _, ok := findingByRule(plan.Findings, "SYS-SELF-GOVERN"); !ok {
+		t.Fatal("expected SYS-SELF-GOVERN for a privileged file-writer verb")
+	}
+	if !plan.Blocked {
+		t.Error("a self-governance-capable system verb must block apply")
+	}
+}
+
+// manage_apps install from a writable build dir is acknowledge (SYS-APP-INSTALL)
+// when a signing team gates it, and hard-blocked (SYS-APP-CODEEXEC) without one.
+func TestSystemAppInstallTeamIDGate(t *testing.T) {
+	writableSrc := t.TempDir() // owned by the test user → agent-writable
+	base := func(apps admin.AppConfig) LiveState {
+		return LiveState{System: admin.SystemCommands{Version: 1, Apps: apps}}
+	}
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+policy:
+  add:
+    - {effect: allow, agent: bot, app: system, action: manage_apps}
+`
+	p := parse(t, src)
+
+	// Writable source + a team-ID gate → acknowledge, not blocked.
+	gated := base(admin.AppConfig{
+		AllowedInstallDirs:    []string{"/Applications"},
+		AllowedSourcePrefixes: []string{writableSrc},
+		AllowedTeamIDs:        []string{"P7Y2NJ7JP3"},
+	})
+	plan := BuildPlan(p, gated, minimalDefs(), DefaultBounds(), "d", MachineInfo{HomeDir: "/nh"})
+	if _, ok := findingByRule(plan.Findings, "SYS-APP-INSTALL"); !ok {
+		t.Fatal("expected SYS-APP-INSTALL when a team-id gates a writable source")
+	}
+	if _, ok := findingByRule(plan.Findings, "SYS-APP-CODEEXEC"); ok {
+		t.Error("a team-id-gated install must not be SYS-APP-CODEEXEC")
+	}
+	if plan.Blocked {
+		t.Error("a team-id-gated install must be acknowledge-to-apply, not blocked")
+	}
+
+	// Writable source + NO provenance gate → blocking SYS-APP-CODEEXEC.
+	ungated := base(admin.AppConfig{
+		AllowedInstallDirs:    []string{"/Applications"},
+		AllowedSourcePrefixes: []string{writableSrc},
+	})
+	plan = BuildPlan(p, ungated, minimalDefs(), DefaultBounds(), "d", MachineInfo{HomeDir: "/nh"})
+	if _, ok := findingByRule(plan.Findings, "SYS-APP-CODEEXEC"); !ok {
+		t.Fatal("expected SYS-APP-CODEEXEC for a writable source with no provenance gate")
+	}
+	if !plan.Blocked {
+		t.Error("an ungated writable-source install must block apply")
 	}
 }

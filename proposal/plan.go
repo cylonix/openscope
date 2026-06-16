@@ -171,7 +171,7 @@ func isBlocking(b Bounds, f Finding) bool {
 	// is deliberately no escape hatch for a generic-runner verb (it would defeat
 	// the typed-broker model) or a verb definition that collides with an app.
 	switch f.RuleID {
-	case "SSH-SHELL-PASSTHROUGH", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET":
+	case "SSH-SHELL-PASSTHROUGH", "SYS-SHELL-PASSTHROUGH", "SYS-SELF-GOVERN", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET":
 		return true
 	}
 	if f.RuleID == "SSH-ROOT-USER" && b.SSH.RootUser == "deny" {

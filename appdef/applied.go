@@ -50,6 +50,15 @@ func LoadAppliedFile(path string) ([]Definition, error) {
 		d.RootApplied = true
 		d.Source = path
 		d.ManifestPath = path
+		// Mark each action root-applied too, so provenance survives a Merge that
+		// unions actions from a less-trusted source onto the same namespace (the
+		// app-level flag is coarse: Merge ORs it, which would otherwise let an
+		// apps.d verb ride a registry verb's trust). The executor checks the
+		// action's flag, not the def's.
+		for name, a := range d.Actions {
+			a.RootApplied = true
+			d.Actions[name] = a
+		}
 		defs = append(defs, d)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].App.Name < defs[j].App.Name })

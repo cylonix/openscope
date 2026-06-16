@@ -98,9 +98,11 @@ type SystemBlk struct {
 		AllowedChownPrefixes AddRemove `yaml:"allowed_chown_prefixes"`
 	} `yaml:"files"`
 	Apps struct {
-		AllowedSourcePrefixes AddRemove `yaml:"allowed_source_prefixes"`
-		AllowedInstallDirs    AddRemove `yaml:"allowed_install_dirs"`
-		AllowedNames          AddRemove `yaml:"allowed_names"`
+		AllowedSourcePrefixes  AddRemove `yaml:"allowed_source_prefixes"`
+		AllowedInstallDirs     AddRemove `yaml:"allowed_install_dirs"`
+		AllowedNames           AddRemove `yaml:"allowed_names"`
+		RequireRootOwnedSource *bool     `yaml:"require_root_owned_source"`
+		AllowedTeamIDs         AddRemove `yaml:"allowed_team_ids"`
 	} `yaml:"apps"`
 	Pkg struct {
 		AllowedPrefixes  AddRemove `yaml:"allowed_prefixes"`
@@ -121,7 +123,7 @@ type PolicyBlk struct {
 // to the root-owned applied-verb registry. Each Add is a (possibly partial)
 // app definition whose `command:` templates merge onto the bundled namespace
 // (e.g. add `gen_promo` to the `ssh` app). Remove drops a whole app (Action
-// "") or a single action. v1 supports executor: ssh only.
+// "") or a single action. Supported executors: ssh and system.
 type AppsBlk struct {
 	Add    []appdef.Definition `yaml:"add"`
 	Remove []AppRef            `yaml:"remove"`
@@ -209,15 +211,19 @@ func (p Proposal) Validate() error {
 	for i := range p.Apps.Add {
 		// Validate the definition itself (placeholder→param checks, constraints),
 		// then enforce the proposal-specific rules: a proposal can only ship a
-		// command-template ssh verb — never a `script:` action (it cannot carry an
-		// embedded script artifact) and, in v1, never another executor (those lack
-		// a review finding like SSH-WRITE).
+		// command-template verb — never a `script:` action (it cannot carry an
+		// embedded script artifact) and only on an executor that has a review
+		// finding: ssh (SSH-WRITE) or system (SYS-CUSTOM-VERB, plus the
+		// SYS-SHELL-PASSTHROUGH / SYS-SELF-GOVERN escape-shape blockers). A system
+		// command template is honored only from the root-owned registry after apply.
 		if err := p.Apps.Add[i].Validate(); err != nil {
 			return fmt.Errorf("apps.add[%d]: %w", i, err)
 		}
 		d := p.Apps.Add[i]
-		if d.App.Executor != "ssh" {
-			return fmt.Errorf("apps.add[%d] (%s): only executor: ssh custom verbs are supported, got %q", i, d.App.Name, d.App.Executor)
+		switch d.App.Executor {
+		case "ssh", "system":
+		default:
+			return fmt.Errorf("apps.add[%d] (%s): only executor: ssh or system custom verbs are supported, got %q", i, d.App.Name, d.App.Executor)
 		}
 		for name, a := range d.Actions {
 			if strings.TrimSpace(a.Script) != "" {
@@ -285,6 +291,10 @@ func (p Proposal) EffectiveSystem(live admin.SystemCommands) admin.SystemCommand
 	out.Apps.AllowedSourcePrefixes = mergeStrings(out.Apps.AllowedSourcePrefixes, s.Apps.AllowedSourcePrefixes)
 	out.Apps.AllowedInstallDirs = mergeStrings(out.Apps.AllowedInstallDirs, s.Apps.AllowedInstallDirs)
 	out.Apps.AllowedNames = mergeStrings(out.Apps.AllowedNames, s.Apps.AllowedNames)
+	out.Apps.AllowedTeamIDs = mergeStrings(out.Apps.AllowedTeamIDs, s.Apps.AllowedTeamIDs)
+	if s.Apps.RequireRootOwnedSource != nil {
+		out.Apps.RequireRootOwnedSource = *s.Apps.RequireRootOwnedSource
+	}
 	out.Pkg.AllowedPrefixes = mergeStrings(out.Pkg.AllowedPrefixes, s.Pkg.AllowedPrefixes)
 	out.Pkg.AllowedTeamIDs = mergeStrings(out.Pkg.AllowedTeamIDs, s.Pkg.AllowedTeamIDs)
 	if s.Pkg.RequireRootOwned != nil {

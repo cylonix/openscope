@@ -77,6 +77,38 @@ func TestEffectiveSystemMerges(t *testing.T) {
 	}
 }
 
+// The manage_apps provenance gates (allowed_team_ids, require_root_owned_source)
+// must survive EffectiveSystem — a proposal that sets them is how the team-ID
+// trust anchor gets configured. Regression: these were added to AppConfig + the
+// executor/lint but not the proposal merge, so a proposal's team-id was silently
+// dropped (the gate never took effect).
+func TestEffectiveSystemMergesAppGates(t *testing.T) {
+	src := `
+version: 1
+kind: openscope-proposal
+metadata: {name: app-gates}
+system_commands:
+  apps:
+    allowed_source_prefixes: {add: [/private/tmp/cylonix-staged-apps]}
+    allowed_team_ids:        {add: [P7Y2NJ7JP3]}
+    require_root_owned_source: true
+`
+	p, err := Parse([]byte(src), "x")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	eff := p.EffectiveSystem(admin.SystemCommands{Version: 1})
+	if !contains(eff.Apps.AllowedTeamIDs, "P7Y2NJ7JP3") {
+		t.Errorf("apps.allowed_team_ids not merged: %v", eff.Apps.AllowedTeamIDs)
+	}
+	if !eff.Apps.RequireRootOwnedSource {
+		t.Error("apps.require_root_owned_source not merged")
+	}
+	if !contains(eff.Apps.AllowedSourcePrefixes, "/private/tmp/cylonix-staged-apps") {
+		t.Errorf("apps.allowed_source_prefixes not merged: %v", eff.Apps.AllowedSourcePrefixes)
+	}
+}
+
 func TestEffectiveTargetsKeepsLiveOnCollision(t *testing.T) {
 	p, _ := Parse([]byte(minimalProposal), "x")
 	live := admin.SSHTargets{Version: 1, Targets: []admin.SSHTarget{

@@ -5,6 +5,7 @@ package systemexec
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,17 @@ import (
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
 )
+
+// systemVerbDef builds a custom system-executor app definition with one
+// command-template action, used by the runSystemCommand tests.
+func systemVerbDef(action, command string, rootApplied bool, params ...appdef.Parameter) appdef.Definition {
+	return appdef.Definition{
+		App: appdef.App{Name: "deploytools", Executor: "system"},
+		Actions: map[string]appdef.Action{
+			action: {Command: command, Parameters: params, RootApplied: rootApplied},
+		},
+	}
+}
 
 type stubRunner struct {
 	LastName string
@@ -931,5 +943,140 @@ func TestInstallPkgNeedsRootBroker(t *testing.T) {
 	cmds.Pkg.RequireRootOwned = true
 	if _, err := (Executor{}).installPkg(cmds, map[string]string{"pkg": pkg}); err == nil {
 		t.Fatal("install_pkg must refuse on a non-root broker")
+	}
+}
+
+// A custom system verb renders its template into a fixed argv with NO shell: a
+// parameter value containing spaces stays ONE argument and cannot add another.
+func TestRunSystemCommandNoShellSplit(t *testing.T) {
+	paths := testPaths(t)
+	writeConfig(t, paths, fullConfig())
+	withEUID(t, 501) // non-root, no escalation → priv=false (provenance not enforced)
+
+	stub := &stubRunner{Result: executor.Result{Stdout: "done", ExitCode: 0}}
+	e := Executor{Paths: paths, Runner: stub}
+
+	def := systemVerbDef("deploy", "/usr/bin/deploy --env {env} --note {note}", false,
+		appdef.Parameter{Name: "env"}, appdef.Parameter{Name: "note"})
+	if _, err := e.Run(def, "deploy", map[string]string{"env": "prod", "note": "hello world"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stub.LastName != "/usr/bin/deploy" {
+		t.Fatalf("expected /usr/bin/deploy, got %q", stub.LastName)
+	}
+	want := []string{"--env", "prod", "--note", "hello world"} // "hello world" is ONE arg
+	if strings.Join(stub.LastArgs, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected %v, got %v", want, stub.LastArgs)
+	}
+}
+
+// Under a privilege boundary (root daemon) a custom verb's command template must
+// be root-applied; an apps.d (non-applied) verb is refused.
+func TestRunSystemCommandProvenanceGate(t *testing.T) {
+	paths := testPaths(t)
+	writeConfig(t, paths, fullConfig())
+	withEUID(t, 0) // root broker → priv=true → template must be root-applied
+
+	stub := &stubRunner{Result: executor.Result{ExitCode: 0}}
+	e := Executor{Paths: paths, Runner: stub}
+
+	notApplied := systemVerbDef("deploy", "/usr/bin/true {arg}", false, appdef.Parameter{Name: "arg"})
+	_, err := e.Run(notApplied, "deploy", map[string]string{"arg": "x"})
+	if err == nil || !strings.Contains(err.Error(), "root-owned applied registry") {
+		t.Fatalf("expected provenance refusal, got %v", err)
+	}
+
+	// Root-applied → passes the gate and runs (argv[0] /usr/bin/true is sudo-safe).
+	applied := systemVerbDef("deploy", "/usr/bin/true {arg}", true, appdef.Parameter{Name: "arg"})
+	if _, err := e.Run(applied, "deploy", map[string]string{"arg": "x"}); err != nil {
+		t.Fatalf("root-applied verb should run: %v", err)
+	}
+	if stub.LastName != "/usr/bin/true" {
+		t.Fatalf("expected /usr/bin/true, got %q", stub.LastName)
+	}
+}
+
+// renderSystemArgv rejects the shapes the lint also forbids: a parameter program,
+// a non-absolute program, and a non-absolute path-constrained parameter.
+func TestRunSystemCommandRejectsBadShapes(t *testing.T) {
+	paths := testPaths(t)
+	writeConfig(t, paths, fullConfig())
+	withEUID(t, 501)
+	e := Executor{Paths: paths, Runner: &stubRunner{}}
+
+	d1 := systemVerbDef("a", "{prog} --go", false, appdef.Parameter{Name: "prog"})
+	if _, err := e.Run(d1, "a", map[string]string{"prog": "/bin/sh"}); err == nil {
+		t.Fatal("expected refusal when the program is a parameter")
+	}
+	d2 := systemVerbDef("b", "deploy --go", false)
+	if _, err := e.Run(d2, "b", nil); err == nil {
+		t.Fatal("expected refusal when the program is not an absolute path")
+	}
+	d3 := systemVerbDef("c", "/usr/bin/tool {path}", false, appdef.Parameter{Name: "path", Constraint: "path"})
+	if _, err := e.Run(d3, "c", map[string]string{"path": "relative/x"}); err == nil {
+		t.Fatal("expected refusal for a non-absolute path parameter")
+	}
+}
+
+// manage_apps install accepts a signed app from a non-root build dir when its
+// signing team matches; rejects a wrong/absent team or a failed verification.
+func TestManageAppsInstallTeamIDGate(t *testing.T) {
+	oldTeam := appTeamIDOf
+	defer func() { appTeamIDOf = oldTeam }()
+
+	paths := testPaths(t)
+	cfg := fullConfig()
+	cfg.Apps.AllowedTeamIDs = []string{"P7Y2NJ7JP3"} // team-id is the provenance
+	writeConfig(t, paths, cfg)
+
+	stub := &stubRunner{Result: executor.Result{ExitCode: 0}}
+	e := Executor{Paths: paths, Runner: stub}
+	source := "/Users/test/Library/Developer/Xcode/DerivedData/Kidfence-abc/Build/Products/Debug/Kidfence.app"
+	params := map[string]string{"op": "install", "name": "Kidfence", "source": source, "dest": "/Applications"}
+
+	appTeamIDOf = func(string) (string, error) { return "P7Y2NJ7JP3", nil }
+	if _, err := e.Run(emptyDef, "manage_apps", params); err != nil {
+		t.Fatalf("matching team id should install: %v", err)
+	}
+	if stub.LastName != "/usr/bin/ditto" {
+		t.Fatalf("expected ditto, got %q", stub.LastName)
+	}
+
+	appTeamIDOf = func(string) (string, error) { return "WRONGTEAM00", nil }
+	if _, err := e.Run(emptyDef, "manage_apps", params); err == nil {
+		t.Fatal("expected refusal for a non-allowed signing team")
+	}
+
+	appTeamIDOf = func(string) (string, error) { return "", nil } // unsigned/ad-hoc
+	if _, err := e.Run(emptyDef, "manage_apps", params); err == nil {
+		t.Fatal("expected refusal for an unsigned app when team-ids are required")
+	}
+
+	appTeamIDOf = func(string) (string, error) { return "", fmt.Errorf("tampered") }
+	if _, err := e.Run(emptyDef, "manage_apps", params); err == nil {
+		t.Fatal("expected refusal when signature verification fails")
+	}
+}
+
+// require_root_owned_source refuses a source the current (non-root) user owns.
+func TestManageAppsInstallRootOwnedSourceGate(t *testing.T) {
+	paths := testPaths(t)
+	cfg := fullConfig()
+	cfg.Apps.RequireRootOwnedSource = true
+
+	dir := t.TempDir()
+	appDir := filepath.Join(dir, "Kidfence.app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Apps.AllowedSourcePrefixes = []string{dir} // prefix check passes; ownership fails
+	writeConfig(t, paths, cfg)
+
+	e := Executor{Paths: paths, Runner: &stubRunner{Result: executor.Result{ExitCode: 0}}}
+	_, err := e.Run(emptyDef, "manage_apps", map[string]string{
+		"op": "install", "name": "Kidfence", "source": appDir, "dest": "/Applications",
+	})
+	if err == nil {
+		t.Fatal("expected refusal: source is owned by the current user, not root")
 	}
 }

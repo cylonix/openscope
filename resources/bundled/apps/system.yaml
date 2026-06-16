@@ -107,7 +107,7 @@ actions:
     script: manage_files
 
   manage_apps:
-    description: Quit, launch, install, symlink, or uninstall macOS apps
+    description: Quit, launch, install, symlink, or uninstall macOS apps (install/symlink source scoped by apps.allowed_source_prefixes / require_root_owned_source / allowed_team_ids)
     parameters:
       - name: op
         type: string

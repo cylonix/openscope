@@ -60,6 +60,13 @@ type Action struct {
 	// Command. The named local_source parameter is consumed by the stream, never
 	// substituted into the command, so the local path can't leak into it.
 	StdinFile string `yaml:"stdin_file"`
+	// RootApplied marks an action whose command template came from the root-owned
+	// applied-verb registry (a same-uid agent cannot rewrite it). Provenance is
+	// tracked PER ACTION, not per app: an apps.d verb merged onto a namespace that
+	// also has a registry verb must not inherit the registry verb's trust. Set by
+	// LoadAppliedFile; the system executor refuses to run a privileged command
+	// template whose action is not RootApplied. yaml:"-" so it is never declared.
+	RootApplied bool `yaml:"-"`
 }
 
 type Parameter struct {

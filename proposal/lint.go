@@ -6,6 +6,7 @@ package proposal
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +16,35 @@ import (
 	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/policy"
 )
+
+// placeholderRE matches a {name} substitution point in a command template.
+var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
+
+// systemBundledVerbs are the system app's vetted Go-backed verbs (the runAction
+// switch in executor/systemexec). An allowed system action OUTSIDE this set is a
+// custom command-template verb — SYS-CUSTOM-VERB surfaces it. Keep in sync with
+// that switch.
+var systemBundledVerbs = []string{
+	"manage_packages", "manage_services", "manage_processes", "check_port",
+	"release_port", "manage_files", "manage_apps", "install_pkg", "build",
+}
+
+// systemDeputies re-introduce arbitrary execution even behind a fixed argv[0]:
+// shells, interpreters, and exec-delegating wrappers. A custom sudo verb whose
+// program is any of these is a generic root runner.
+var systemDeputies = []string{
+	"sh", "bash", "zsh", "dash", "ksh", "ash", "fish",
+	"env", "xargs", "eval", "nohup", "timeout", "nice", "stdbuf", "setsid", "script",
+	"python", "python2", "python3", "perl", "ruby", "node", "deno", "bun", "php", "lua",
+	"osascript", "awk", "gawk", "sed", "find", "sudo", "doas", "ssh", "open",
+}
+
+// systemWriters can clobber arbitrary files; as a privileged custom verb they can
+// overwrite OpenScope's own root-owned control surface (SYS-SELF-GOVERN).
+var systemWriters = []string{
+	"tee", "dd", "cp", "mv", "ln", "install", "rsync", "chmod", "chown", "chgrp",
+	"rm", "mkfifo", "truncate",
+}
 
 type Severity int
 
@@ -206,21 +236,37 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 		}
 	}
 
-	// SYS-APP-CODEEXEC: install + writable source = arbitrary code execution.
+	// SYS-APP-CODEEXEC / SYS-APP-INSTALL: manage_apps install copies a .app into an
+	// install dir and can launch it — code execution as the user. A source the
+	// agent can write with NO provenance gate is blocking SYS-APP-CODEEXEC (it can
+	// drop any bundle there); a strong gate (a signing team ID, root-owned source,
+	// or only non-writable source prefixes) is HIGH/acknowledge SYS-APP-INSTALL,
+	// mirroring install_pkg. The strong path is what lets a test app install from a
+	// writable build dir WHEN its signature proves its origin.
 	if hasAllow(allows, "system", "manage_apps") && len(effSystem.Apps.AllowedInstallDirs) > 0 {
+		ap := effSystem.Apps
 		var writable []string
-		for _, src := range effSystem.Apps.AllowedSourcePrefixes {
+		for _, src := range ap.AllowedSourcePrefixes {
 			if w, reason, _ := pathAgentWritable(src); w {
 				writable = append(writable, fmt.Sprintf("%s (%s)", src, reason))
 			}
 		}
-		if len(writable) > 0 {
+		strong := len(ap.AllowedTeamIDs) > 0 || ap.RequireRootOwnedSource ||
+			(len(ap.AllowedSourcePrefixes) > 0 && len(writable) == 0)
+		switch {
+		case len(writable) > 0 && !strong:
 			out = append(out, Finding{
 				RuleID: "SYS-APP-CODEEXEC", Severity: SevHigh,
 				Resource: fmt.Sprintf("%d agent-writable source(s)", len(writable)),
 				Summary: fmt.Sprintf("manage_apps installs+launches into %s from %s — arbitrary code execution as your user",
-					strings.Join(effSystem.Apps.AllowedInstallDirs, ", "), strings.Join(writable, "; ")),
-				Fix: "remove manage_apps install/launch, or use a root-owned source prefix",
+					strings.Join(ap.AllowedInstallDirs, ", "), strings.Join(writable, "; ")),
+				Fix: "add apps.allowed_team_ids (signing team) or apps.require_root_owned_source; a writable source prefix alone is not a boundary",
+			})
+		case len(writable) > 0:
+			out = append(out, Finding{
+				RuleID: "SYS-APP-INSTALL", Severity: SevHigh, Resource: "manage_apps",
+				Summary: "installs a .app from a writable build dir, gated by " + appScopeDesc(ap),
+				Fix:     "confirm this is intended; a signing team ID (apps.allowed_team_ids) is the strongest gate",
 			})
 		}
 	}
@@ -309,7 +355,21 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 		}
 	}
 
-	out = append(out, passthroughFindings(p)...)
+	// SYS-CUSTOM-VERB: an allow rule grants a NON-bundled system verb — it runs
+	// from a root-applied command template, not a vetted Go handler. HIGH and
+	// acknowledge-to-apply (the operator signs off on the rendered worst case);
+	// escape-hatch SHAPES are hard-blocked separately by SYS-SHELL-PASSTHROUGH /
+	// SYS-SELF-GOVERN above.
+	for _, v := range customSystemVerbs(allows, effDefs) {
+		out = append(out, Finding{
+			RuleID: "SYS-CUSTOM-VERB", Severity: SevHigh,
+			Resource: v.app + "·" + v.action,
+			Summary:  "custom system (sudo) verb runs an approved command template as root" + v.cmdHint,
+			Fix:      "confirm the program and where each <param> lands; keep argv[0] a fixed trusted binary and arguments typed — this requires typed acknowledgment to apply",
+		})
+	}
+
+	out = append(out, passthroughFindings(p, effDefs)...)
 	out = append(out, deadRuleFindings(p, targetByAlias, effDefs)...)
 	out = append(out, passFindings(p, effSystem)...)
 
@@ -567,6 +627,26 @@ func pkgScopeDesc(pk admin.PkgConfig) string {
 	}
 }
 
+// appScopeDesc spells out the manage_apps source-provenance gates (ANDed), the
+// same way pkgScopeDesc does for install_pkg.
+func appScopeDesc(ap admin.AppConfig) string {
+	var gates []string
+	if len(ap.AllowedTeamIDs) > 0 {
+		gates = append(gates, "signed by "+anyOf(ap.AllowedTeamIDs))
+	}
+	if ap.RequireRootOwnedSource {
+		gates = append(gates, "root-owned source")
+	}
+	switch len(gates) {
+	case 0:
+		return "its source prefix only"
+	case 1:
+		return gates[0]
+	default:
+		return "ALL of {" + strings.Join(gates, "  AND  ") + "}"
+	}
+}
+
 // anyOf renders a within-gate OR list. A single entry needs no "any of".
 func anyOf(items []string) string {
 	if len(items) == 1 {
@@ -639,31 +719,141 @@ func targetsForRule(r policy.Rule, effTargets []admin.SSHTarget) []string {
 }
 
 // passthroughFindings flags a proposal-added verb whose command template is a
-// generic runner rather than a fixed program with typed arguments — a bare
-// parameter as the whole command, an `eval`, or a shell `-c` whose body is a
-// parameter. This is what keeps custom verbs from degrading into "run arbitrary
-// remote command"; it is blocking (see isBlocking / DefaultBoundsYAML).
-func passthroughFindings(p Proposal) []Finding {
+// generic runner rather than a fixed program with typed arguments. For ssh verbs
+// (bounded by the remote host) the existing shape check applies. For SYSTEM
+// (sudo) verbs the bar is higher — a generic runner there is arbitrary ROOT
+// execution on the broker host, and a privileged writer can rewrite OpenScope's
+// own rules — so a stricter analysis runs and its findings hard-fail apply (see
+// isBlocking). The executor is resolved from the effective defs so an extension
+// that omits `executor:` is judged by the namespace it joins.
+func passthroughFindings(p Proposal, effDefs map[string]appdef.Definition) []Finding {
 	var out []Finding
 	for _, d := range p.Apps.Add {
+		exec := d.App.Executor
+		if ed, ok := effDefs[d.App.Name]; ok && ed.App.Executor != "" {
+			exec = ed.App.Executor
+		}
 		names := make([]string, 0, len(d.Actions))
 		for name := range d.Actions {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if reason := shellPassthrough(d.Actions[name].Command); reason != "" {
+			cmd := d.Actions[name].Command
+			if strings.TrimSpace(cmd) == "" {
+				continue
+			}
+			res := d.App.Name + "·" + name
+			if exec == "system" {
+				if reason := systemPassthrough(cmd); reason != "" {
+					out = append(out, Finding{
+						RuleID: "SYS-SHELL-PASSTHROUGH", Severity: SevHigh, Resource: res,
+						Summary: "system command template is a generic root runner (" + reason + ") — it turns a sudo verb into arbitrary root execution",
+						Fix:     "make the command a fixed absolute program with typed {param} arguments; never a parameter as the program, a shell/interpreter, or an exec-delegating wrapper",
+					})
+				} else if reason := systemSelfGovern(cmd); reason != "" {
+					out = append(out, Finding{
+						RuleID: "SYS-SELF-GOVERN", Severity: SevHigh, Resource: res,
+						Summary: "privileged system verb can overwrite root-owned files (" + reason + ") — it could rewrite the rules that confine the agent",
+						Fix:     "use a bundled verb (manage_files has prefix gates); never let a custom sudo verb run a general-purpose file writer",
+					})
+				}
+				continue
+			}
+			if reason := shellPassthrough(cmd); reason != "" {
 				out = append(out, Finding{
-					RuleID: "SSH-SHELL-PASSTHROUGH", Severity: SevHigh,
-					Resource: d.App.Name + "·" + name,
-					Summary:  "command template is a generic runner (" + reason + ") — that turns a typed verb into arbitrary remote execution",
-					Fix:      "make the command a fixed program with typed {param} arguments; never pass a parameter as the command, an eval, or a shell -c body",
+					RuleID: "SSH-SHELL-PASSTHROUGH", Severity: SevHigh, Resource: res,
+					Summary: "command template is a generic runner (" + reason + ") — that turns a typed verb into arbitrary remote execution",
+					Fix:     "make the command a fixed program with typed {param} arguments; never pass a parameter as the command, an eval, or a shell -c body",
 				})
 			}
 		}
 	}
 	return out
 }
+
+// systemPassthrough returns a non-empty reason when a SYSTEM command template is
+// a generic root runner: its program is a parameter, not an absolute path, or a
+// shell/interpreter/exec-delegating deputy. This is what keeps a custom sudo verb
+// from degrading into "run arbitrary root command".
+func systemPassthrough(cmd string) string {
+	fields := strings.Fields(strings.TrimSpace(cmd))
+	if len(fields) == 0 {
+		return ""
+	}
+	prog := fields[0]
+	if containsPlaceholder(prog) || isBarePlaceholder(prog) {
+		return "the program is a parameter"
+	}
+	if !filepath.IsAbs(prog) {
+		return "the program is not an absolute path"
+	}
+	if base := filepath.Base(prog); slices.Contains(systemDeputies, base) {
+		return base + " is a shell/interpreter/wrapper that re-enables arbitrary execution"
+	}
+	return ""
+}
+
+// systemSelfGovern flags a system verb whose program is a general-purpose file
+// writer — as a privileged verb it can target AdminDir, sudoers, or the daemon's
+// own plist/binary, rewriting the control plane that confines the agent.
+func systemSelfGovern(cmd string) string {
+	fields := strings.Fields(strings.TrimSpace(cmd))
+	if len(fields) == 0 {
+		return ""
+	}
+	if base := filepath.Base(fields[0]); slices.Contains(systemWriters, base) {
+		return base + " can overwrite arbitrary root-owned files including OpenScope's own config"
+	}
+	return ""
+}
+
+// customSystemVerbs returns (app, action) pairs an allow rule grants on a defined
+// system-executor verb that is NOT one of the vetted bundled verbs — i.e. a
+// command-template verb that runs as root. Mirrors customSSHWrites; the worst-
+// case rendered command is shown so the operator acknowledges eyes-open.
+func customSystemVerbs(allows []policy.Rule, defs map[string]appdef.Definition) []sysVerb {
+	seen := map[string]struct{}{}
+	var out []sysVerb
+	for _, r := range allows {
+		def, ok := defs[r.App]
+		if !ok || def.App.Executor != "system" {
+			continue
+		}
+		if slices.Contains(systemBundledVerbs, r.Action) {
+			continue // vetted Go verb, gated by its own SYS-* rules
+		}
+		action, ok := def.Action(r.Action)
+		if !ok {
+			continue // undefined verb → POLICY-DEAD-RULE owns it
+		}
+		key := r.App + "\x00" + r.Action
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		hint := " (see its app definition)"
+		if c := strings.TrimSpace(action.Command); c != "" {
+			hint = "; worst case it runs: " + renderWorstCase(c)
+		}
+		out = append(out, sysVerb{app: r.App, action: r.Action, cmdHint: hint})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].app != out[j].app {
+			return out[i].app < out[j].app
+		}
+		return out[i].action < out[j].action
+	})
+	return out
+}
+
+// renderWorstCase shows a command template with every {param} marked as
+// agent-controlled, so the acknowledgment names the literal worst case.
+func renderWorstCase(cmd string) string {
+	return placeholderRE.ReplaceAllString(strings.TrimSpace(cmd), "<$1>")
+}
+
+type sysVerb struct{ app, action, cmdHint string }
 
 var shellInterpreters = []string{"sh", "bash", "zsh", "dash", "ksh", "ash"}
 

@@ -59,7 +59,7 @@ func (e Executor) Run(def appdef.Definition, actionName string, params map[strin
 		return executor.Result{}, err
 	}
 
-	payload, err := e.runAction(cmds, actionName, params)
+	payload, err := e.runAction(def, cmds, actionName, params)
 	if err != nil {
 		return executor.Result{}, err
 	}
@@ -71,7 +71,7 @@ func (e Executor) Run(def appdef.Definition, actionName string, params map[strin
 	return executor.Result{Stdout: string(data), ExitCode: 0}, nil
 }
 
-func (e Executor) runAction(cmds admin.SystemCommands, actionName string, params map[string]string) (map[string]any, error) {
+func (e Executor) runAction(def appdef.Definition, cmds admin.SystemCommands, actionName string, params map[string]string) (map[string]any, error) {
 	switch actionName {
 	case "manage_packages":
 		return e.managePackages(cmds, params)
@@ -92,15 +92,117 @@ func (e Executor) runAction(cmds admin.SystemCommands, actionName string, params
 	case "build":
 		return e.build(cmds, params)
 	default:
-		return nil, fmt.Errorf("unsupported system action %q", actionName)
+		// Not a bundled Go verb — a custom verb runs from its root-applied command
+		// template (see runSystemCommand). Bundled verbs are matched above and never
+		// reach here, so an override of a bundled name is fail-safe: the trusted Go
+		// handler runs, not the template.
+		return e.runSystemCommand(def, actionName, params)
 	}
 }
 
-var teamIDPattern = regexp.MustCompile(`Developer ID Installer:.*\(([A-Z0-9]{10})\)`)
+// placeholderRE matches {name} substitution points in a custom verb's command
+// template (the same shape the ssh executor uses).
+var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
 
-// Overridable for tests so they need neither a real pkgutil nor a real install.
+// runSystemCommand executes a custom (non-bundled) system verb from its
+// app-definition `command:` template. Unlike the ssh executor it NEVER goes
+// through a shell: the template is tokenized into a fixed argv and each {param}
+// substitutes into exactly one argv element, so a parameter value can never add
+// an argument or break out into another command. Two guardrails fence it off:
+//   - Provenance: when the verb would run privileged (root daemon or sudo
+//     escalation) its command template MUST be root-applied — a same-uid agent
+//     cannot rewrite it. Personal installs with no privilege boundary keep
+//     apps.d custom verbs, matching the ssh executor.
+//   - argv[0] is a fixed absolute path with no placeholder (renderSystemArgv
+//     re-checks the lint guarantee); e.run's RequireSudoSafe then rejects a
+//     user-writable program for a privileged verb.
+func (e Executor) runSystemCommand(def appdef.Definition, actionName string, params map[string]string) (map[string]any, error) {
+	action, ok := def.Action(actionName)
+	if !ok || strings.TrimSpace(action.Command) == "" {
+		return nil, fmt.Errorf("unsupported system action %q", actionName)
+	}
+
+	priv := geteuid() == 0 || allowSudoEscalation()
+	if priv && !action.RootApplied {
+		return nil, fmt.Errorf(
+			"custom system verb %q must come from the root-owned applied registry "+
+				"(via `sudo openscope apply`): a privileged command template may not "+
+				"come from an agent-writable source", actionName)
+	}
+
+	argv, err := renderSystemArgv(action.Command, action.Parameters, params)
+	if err != nil {
+		return nil, fmt.Errorf("system verb %q: %w", actionName, err)
+	}
+
+	stdout, err := e.run(priv, argv[0], argv[1:]...)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"action": actionName,
+		"output": strings.TrimRight(stdout, "\n"),
+	}, nil
+}
+
+// renderSystemArgv turns a command template into a fixed argv with NO shell:
+// it tokenizes on whitespace and substitutes each {param} into exactly one argv
+// element, so a value containing spaces stays a single argument and cannot add
+// or break into another. argv[0] must be a literal absolute path (the lint
+// proves this; we re-check). Values are validated by constraint but never
+// shell-quoted — there is no shell to quote for.
+func renderSystemArgv(tmpl string, declared []appdef.Parameter, params map[string]string) ([]string, error) {
+	constraintOf := make(map[string]string, len(declared))
+	for _, p := range declared {
+		constraintOf[p.Name] = p.Constraint
+	}
+
+	tokens := strings.Fields(tmpl)
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("empty command template")
+	}
+	if placeholderRE.MatchString(tokens[0]) {
+		return nil, fmt.Errorf("program %q must be a literal, not a parameter", tokens[0])
+	}
+	if !filepath.IsAbs(tokens[0]) {
+		return nil, fmt.Errorf("program %q must be an absolute path", tokens[0])
+	}
+
+	argv := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		var subErr error
+		rendered := placeholderRE.ReplaceAllStringFunc(tok, func(m string) string {
+			name := m[1 : len(m)-1]
+			val := params[name]
+			if strings.ContainsAny(val, "\x00\n") {
+				subErr = fmt.Errorf("parameter %q contains a NUL or newline", name)
+				return ""
+			}
+			if constraintOf[name] == "path" {
+				if !filepath.IsAbs(val) {
+					subErr = fmt.Errorf("parameter %q must be an absolute path", name)
+					return ""
+				}
+				val = filepath.Clean(val)
+			}
+			return val
+		})
+		if subErr != nil {
+			return nil, subErr
+		}
+		argv = append(argv, rendered)
+	}
+	return argv, nil
+}
+
+var teamIDPattern = regexp.MustCompile(`Developer ID Installer:.*\(([A-Z0-9]{10})\)`)
+var appTeamIDPattern = regexp.MustCompile(`TeamIdentifier=([A-Z0-9]{10})`)
+
+// Overridable for tests so they need neither a real pkgutil/codesign nor a real
+// install.
 var (
 	pkgTeamIDOf     = realPkgTeamID
+	appTeamIDOf     = realAppTeamID
 	launchInstaller = realLaunchInstaller
 )
 
@@ -200,6 +302,57 @@ func realPkgTeamID(pkg string) (string, error) {
 		return "", err // pkgutil missing or otherwise unrunnable
 	}
 	return "", nil
+}
+
+// realAppTeamID returns the signing team of a .app bundle, but ONLY after
+// confirming the signature is valid and the bundle is intact. The verify step
+// is load-bearing: reading TeamIdentifier without it would trust a field in a
+// bundle the agent may have tampered. A broken/absent signature is an error (the
+// gate refuses); a validly-signed-but-teamless bundle (ad-hoc `codesign -s -`)
+// returns "" so the team-ID gate refuses it too.
+func realAppTeamID(app string) (string, error) {
+	if out, err := exec.Command("/usr/bin/codesign", "--verify", "--deep", "--strict", "--", app).CombinedOutput(); err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("signature invalid or bundle tampered: %s", strings.TrimSpace(string(out)))
+		}
+		return "", err // codesign missing or otherwise unrunnable
+	}
+	// codesign writes the -dvv detail to stderr.
+	out, _ := exec.Command("/usr/bin/codesign", "-dvv", "--", app).CombinedOutput()
+	if m := appTeamIDPattern.FindStringSubmatch(string(out)); m != nil {
+		return m[1], nil
+	}
+	return "", nil
+}
+
+// requireAppSourceProvenance enforces the configured manage_apps source gates
+// (AND, mirroring install_pkg): a root-owned source so the agent can't swap the
+// bundle, and/or a valid signature from an allowed team so a bundle from a
+// writable build dir still proves its origin. With neither set, only the
+// AllowedSourcePrefixes location check applies (the plan blocks that for a
+// writable prefix via SYS-APP-CODEEXEC).
+func requireAppSourceProvenance(cmds admin.SystemCommands, source string) error {
+	if cmds.Apps.RequireRootOwnedSource {
+		if err := requireRootOwnedFile(source); err != nil {
+			return fmt.Errorf("source %w", err)
+		}
+		if err := requireRootOwnedFile(filepath.Dir(source)); err != nil {
+			return fmt.Errorf("source containing dir %w", err)
+		}
+	}
+	if len(cmds.Apps.AllowedTeamIDs) > 0 {
+		team, err := appTeamIDOf(source)
+		if err != nil {
+			return fmt.Errorf("cannot verify app signature: %w", err)
+		}
+		if team == "" {
+			return fmt.Errorf("%q has no Developer Team identity but apps.allowed_team_ids is set", source)
+		}
+		if !slices.Contains(cmds.Apps.AllowedTeamIDs, team) {
+			return fmt.Errorf("app signing team %q is not in apps.allowed_team_ids", team)
+		}
+	}
+	return nil
 }
 
 // realLaunchInstaller starts `installer -pkg <p> -target /` in a NEW SESSION so
@@ -705,6 +858,9 @@ func (e Executor) appInstall(cmds admin.SystemCommands, name string, params map[
 	if !admin.AllowsAppSource(cmds, source) {
 		return nil, fmt.Errorf("source %q is not in the allowed source paths", source)
 	}
+	if err := requireAppSourceProvenance(cmds, source); err != nil {
+		return nil, fmt.Errorf("manage_apps install refused: %w", err)
+	}
 
 	if destDir == "" {
 		if len(cmds.Apps.AllowedInstallDirs) > 0 {
@@ -749,6 +905,9 @@ func (e Executor) appSymlink(cmds admin.SystemCommands, name string, params map[
 	}
 	if !admin.AllowsAppSource(cmds, source) {
 		return nil, fmt.Errorf("source %q is not in the allowed source paths", source)
+	}
+	if err := requireAppSourceProvenance(cmds, source); err != nil {
+		return nil, fmt.Errorf("manage_apps symlink refused: %w", err)
 	}
 
 	if destDir == "" {

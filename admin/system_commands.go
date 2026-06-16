@@ -58,10 +58,21 @@ type ServiceConfig struct {
 	AllowLaunchctl bool     `yaml:"allow_launchctl"`
 }
 
+// AppConfig scopes manage_apps. The install op copies (or symlinks) a .app into
+// an install dir — arbitrary code execution as the user once launched, so the
+// SOURCE is gated like install_pkg's PkgConfig: AllowedSourcePrefixes bounds
+// where an app may come from; the two provenance gates below, when set, are
+// ALSO enforced (AND, mirroring install_pkg) so a build dir the agent can write
+// is acceptable only when the bundle proves its origin. RequireRootOwnedSource
+// stops the agent swapping the bundle; AllowedTeamIDs requires a valid code
+// signature from an allowed team (an agent cannot forge it), which is what lets
+// a test app install from a NON-root build dir.
 type AppConfig struct {
 	AllowedSourcePrefixes  []string `yaml:"allowed_source_prefixes"`
 	AllowedInstallDirs     []string `yaml:"allowed_install_dirs"`
 	AllowedNames           []string `yaml:"allowed_names"`
+	RequireRootOwnedSource bool     `yaml:"require_root_owned_source"`
+	AllowedTeamIDs         []string `yaml:"allowed_team_ids"`
 }
 
 type BuildConfig struct {
@@ -541,6 +552,7 @@ func normalizeSystemCommands(cmds SystemCommands) SystemCommands {
 	cmds.Apps.AllowedSourcePrefixes = normalizePathList(cmds.Apps.AllowedSourcePrefixes)
 	cmds.Apps.AllowedInstallDirs = normalizePathList(cmds.Apps.AllowedInstallDirs)
 	cmds.Apps.AllowedNames = normalizeStringList(cmds.Apps.AllowedNames)
+	cmds.Apps.AllowedTeamIDs = normalizeUpperStringList(cmds.Apps.AllowedTeamIDs)
 	cmds.Pkg.AllowedPrefixes = normalizePathList(cmds.Pkg.AllowedPrefixes)
 	cmds.Pkg.AllowedTeamIDs = normalizeUpperStringList(cmds.Pkg.AllowedTeamIDs)
 	cmds.Builds.AllowedProjectPrefixes = normalizePathList(cmds.Builds.AllowedProjectPrefixes)

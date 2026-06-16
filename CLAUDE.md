@@ -92,6 +92,15 @@ openscope CLI  →(JSON over Unix socket)→  openscoped daemon  →(JSON over s
 
 Implement `executor.Runner`, register it by name in `daemon/executors_darwin.go` and/or `daemon/executors_default.go` (platform-split `defaultExecutors`), and in `daemon/service_test.go`'s stub. The `app.executor` YAML field selects it.
 
+### Custom (command-template) verbs and provenance
+
+Beyond bundled Go verbs, the `ssh` and `system` executors run **custom verbs** from an action's `command:` template. Two custody rules keep a template the agent can't subvert:
+
+- **Provenance is per-action, root-owned.** A custom verb is honored only from the root-owned applied registry (`<AdminDir>/app_definitions.yaml`, written by `sudo openscope apply`); `LoadAppliedFile` sets `Action.RootApplied`. `apps.d` command-templates are stripped in `systemMode` (`appdef.withoutCommandActions`). The `system` executor additionally **refuses** at runtime to run a non-`RootApplied` template when privileged (`geteuid()==0` or sudo escalation) — belt to the assembly's suspenders.
+- **`system` templates never use a shell.** `renderSystemArgv` tokenizes the template into a fixed argv and substitutes each `{param}` into exactly one element, so a value can't add or break into another argument. `argv[0]` must be a literal absolute path; `e.run`'s `RequireSudoSafe` then rejects a user-writable program.
+
+`openscope plan` gates a proposed custom verb (`proposal/lint.go`): `SSH-WRITE` / `SYS-CUSTOM-VERB` surface it for typed acknowledgment (the worst-case command is rendered); the escape-hatch shapes — a generic runner (`SYS-SHELL-PASSTHROUGH`), or a privileged file-writer that could rewrite OpenScope's own config (`SYS-SELF-GOVERN`) — hard-fail apply unconditionally (`plan.isBlocking`). Privileged primitives that need real validation logic (e.g. `install_pkg`, `manage_apps` install gated by `apps.allowed_team_ids` / `require_root_owned_source`) stay bundled Go verbs — a template can't express the gates.
+
 ## Runtime Files
 
 ```
