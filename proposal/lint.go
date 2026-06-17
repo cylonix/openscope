@@ -387,9 +387,46 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 
 	out = append(out, passthroughFindings(p, effDefs)...)
 	out = append(out, deadRuleFindings(p, targetByAlias, effDefs)...)
+	out = append(out, ssmGrantFindings(allows, effDefs)...)
 	out = append(out, passFindings(p, effSystem)...)
 
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Severity > out[j].Severity })
+	return out
+}
+
+// ssmGrantFindings covers the SSM deployment contract plan cannot verify from the
+// proposal alone, and flags over-broad grants. The arbitrary-execution gate is
+// handled by SSM-RUNSHELL-ARBITRARY (passthroughFindings).
+func ssmGrantFindings(allows []policy.Rule, defs map[string]appdef.Definition) []Finding {
+	var out []Finding
+	granted := false
+	for _, r := range allows {
+		def, ok := defs[r.App]
+		if !ok || def.App.Executor != "ssm" {
+			continue
+		}
+		if _, ok := def.Action(r.Action); !ok {
+			continue // POLICY-DEAD-RULE owns undefined verbs
+		}
+		granted = true
+		if strings.TrimSpace(r.Constraints["target"]) == "" {
+			out = append(out, Finding{
+				RuleID: "SSM-BROAD-SCOPE", Severity: SevWarn,
+				Resource: r.App + "/" + r.Action,
+				Summary:  "ssm grant has no target constraint — it applies to every configured instance",
+				Fix:      "add constraints.target to scope the verb to a specific instance",
+			})
+		}
+	}
+	if granted {
+		// One reminder: the binding controls (credential custody + the agent IAM
+		// deny) live outside the proposal, so plan reminds rather than verifies.
+		out = append(out, Finding{
+			RuleID: "SSM-DEPLOY-CONTRACT", Severity: SevWarn, Resource: "ssm",
+			Summary: "ssm verbs require the broker's AWS credentials custodied and the agent's own AWS identity denied SSM",
+			Fix:     "give the broker a least-privilege identity via the EC2 instance role (or a root-owned credentials file the executor accepts), and deny the agent ssm:SendCommand/StartSession in an IAM permission boundary or SCP — plan cannot verify the IAM side",
+		})
+	}
 	return out
 }
 
@@ -864,6 +901,19 @@ func passthroughFindings(p Proposal, effDefs map[string]appdef.Definition) []Fin
 						RuleID: "SYS-SELF-GOVERN", Severity: SevHigh, Resource: res,
 						Summary: "privileged system verb can overwrite root-owned files (" + reason + ") — it could rewrite the rules that confine the agent",
 						Fix:     "use a bundled verb (manage_files has prefix gates); never let a custom sudo verb run a general-purpose file writer",
+					})
+				}
+				continue
+			}
+			if exec == "ssm" {
+				// SSM verbs run via AWS-RunShellScript, so a generic-runner template
+				// is arbitrary ROOT execution on the instance — the SSM twin of a
+				// passthrough ssh verb. Blocks unconditionally (see isBlocking).
+				if reason := shellPassthrough(cmd); reason != "" {
+					out = append(out, Finding{
+						RuleID: "SSM-RUNSHELL-ARBITRARY", Severity: SevHigh, Resource: res,
+						Summary: "ssm command template is a generic runner (" + reason + ") — via AWS-RunShellScript that is arbitrary root execution on the instance",
+						Fix:     "make the command a fixed program with typed {param} arguments (or pin a custom SSM document); never pass a parameter as the command, an eval, or a shell -c body",
 					})
 				}
 				continue

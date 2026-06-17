@@ -46,8 +46,9 @@ const DefaultBoundsYAML = `# OpenScope bounds — the root-owned envelope no pro
 version: 1
 
 # Findings with these rule IDs hard-fail apply (override only by editing here).
-# Note: SSH-SHELL-PASSTHROUGH / SYS-SHELL-PASSTHROUGH (a custom verb whose command
-# is a generic runner), SYS-SELF-GOVERN (a privileged custom verb that can rewrite
+# Note: SSH-SHELL-PASSTHROUGH / SYS-SHELL-PASSTHROUGH / SSM-RUNSHELL-ARBITRARY (a
+# custom verb whose command is a generic runner — for SSM, arbitrary root via
+# AWS-RunShellScript), SYS-SELF-GOVERN (a privileged custom verb that can rewrite
 # OpenScope's own config), APP-DEF-CONFLICT (a verb definition that collides with
 # an existing app), SSH-UPLOAD-SECRET (an upload source that reaches
 # home/~/.ssh/secrets), and SSH-SCRIPT-WRITABLE (a write verb that can overwrite

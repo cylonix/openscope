@@ -213,7 +213,8 @@ func (p Proposal) Validate() error {
 		// then enforce the proposal-specific rules: a proposal can only ship a
 		// command-template verb — never a `script:` action (it cannot carry an
 		// embedded script artifact) and only on an executor that has a review
-		// finding: ssh (SSH-WRITE) or system (SYS-CUSTOM-VERB, plus the
+		// finding: ssh (SSH-WRITE), ssm (SSM-RUNSHELL-ARBITRARY blocker +
+		// SSM-DEPLOY-CONTRACT reminder), or system (SYS-CUSTOM-VERB, plus the
 		// SYS-SHELL-PASSTHROUGH / SYS-SELF-GOVERN escape-shape blockers). A system
 		// command template is honored only from the root-owned registry after apply.
 		if err := p.Apps.Add[i].Validate(); err != nil {
@@ -221,9 +222,9 @@ func (p Proposal) Validate() error {
 		}
 		d := p.Apps.Add[i]
 		switch d.App.Executor {
-		case "ssh", "system":
+		case "ssh", "ssm", "system":
 		default:
-			return fmt.Errorf("apps.add[%d] (%s): only executor: ssh or system custom verbs are supported, got %q", i, d.App.Name, d.App.Executor)
+			return fmt.Errorf("apps.add[%d] (%s): only executor: ssh, ssm, or system custom verbs are supported, got %q", i, d.App.Name, d.App.Executor)
 		}
 		for name, a := range d.Actions {
 			if strings.TrimSpace(a.Script) != "" {

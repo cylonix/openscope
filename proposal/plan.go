@@ -174,7 +174,7 @@ func isBlocking(b Bounds, f Finding) bool {
 	// another verb runs, the agent has arbitrary execution behind a "safe" verb —
 	// the code-custody analog of an agent-readable key, equally un-approvable.
 	switch f.RuleID {
-	case "SSH-SHELL-PASSTHROUGH", "SYS-SHELL-PASSTHROUGH", "SYS-SELF-GOVERN", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET", "SSH-SCRIPT-WRITABLE":
+	case "SSH-SHELL-PASSTHROUGH", "SYS-SHELL-PASSTHROUGH", "SSM-RUNSHELL-ARBITRARY", "SYS-SELF-GOVERN", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET", "SSH-SCRIPT-WRITABLE":
 		return true
 	}
 	if f.RuleID == "SSH-ROOT-USER" && b.SSH.RootUser == "deny" {
