@@ -170,8 +170,11 @@ func isBlocking(b Bounds, f Finding) bool {
 	// — independent of bounds, since a legacy bounds.yaml predates them and there
 	// is deliberately no escape hatch for a generic-runner verb (it would defeat
 	// the typed-broker model) or a verb definition that collides with an app.
+	// SSH-SCRIPT-WRITABLE joins them: if a write verb can overwrite the script
+	// another verb runs, the agent has arbitrary execution behind a "safe" verb —
+	// the code-custody analog of an agent-readable key, equally un-approvable.
 	switch f.RuleID {
-	case "SSH-SHELL-PASSTHROUGH", "SYS-SHELL-PASSTHROUGH", "SYS-SELF-GOVERN", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET":
+	case "SSH-SHELL-PASSTHROUGH", "SYS-SHELL-PASSTHROUGH", "SYS-SELF-GOVERN", "APP-DEF-CONFLICT", "SSH-UPLOAD-SECRET", "SSH-SCRIPT-WRITABLE":
 		return true
 	}
 	if f.RuleID == "SSH-ROOT-USER" && b.SSH.RootUser == "deny" {

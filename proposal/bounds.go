@@ -49,10 +49,14 @@ version: 1
 # Note: SSH-SHELL-PASSTHROUGH / SYS-SHELL-PASSTHROUGH (a custom verb whose command
 # is a generic runner), SYS-SELF-GOVERN (a privileged custom verb that can rewrite
 # OpenScope's own config), APP-DEF-CONFLICT (a verb definition that collides with
-# an existing app), and SSH-UPLOAD-SECRET (an upload source that reaches
-# home/~/.ssh/secrets) also hard-fail apply unconditionally — they protect the
-# verb/upload mechanism itself and cannot be disabled here. A clean custom system
-# verb instead raises SYS-CUSTOM-VERB (HIGH, acknowledge-to-apply).
+# an existing app), SSH-UPLOAD-SECRET (an upload source that reaches
+# home/~/.ssh/secrets), and SSH-SCRIPT-WRITABLE (a write verb that can overwrite
+# the script another verb runs — arbitrary execution behind a "safe" verb) also
+# hard-fail apply unconditionally — they protect the verb/upload mechanism itself
+# and cannot be disabled here. A clean custom system verb instead raises
+# SYS-CUSTOM-VERB (HIGH, acknowledge-to-apply). SSH-SCRIPT-OPAQUE (a verb that runs
+# an uninspectable server-side script) is a WARN, allowed by default; add it below
+# to forbid opaque server-side scripts org-wide.
 blocking_rules:
   - SYS-APP-CODEEXEC
   - SYS-PKG-CODEEXEC

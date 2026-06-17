@@ -206,14 +206,30 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 	// rule can't be both "runs a command that modifies the host" and "never
 	// matches". The exact command is shown so the operator confirms what they
 	// authorize in this same view.
-	for _, wr := range customSSHWrites(allows, effTargets, effDefs) {
+	writes := customSSHWrites(allows, effTargets, effDefs)
+	for _, wr := range writes {
 		out = append(out, Finding{
 			RuleID: "SSH-WRITE", Severity: SevHigh,
 			Resource: wr.alias + ":" + wr.action,
 			Summary:  "non-inspection ssh action; runs an approved command that can modify " + wr.alias + wr.desc,
 			Fix:      "confirm the command this action runs" + wr.cmdHint + " and keep its path/service constraints tight; add SSH-WRITE to bounds.blocking_rules to forbid",
 		})
+		// SSH-SCRIPT-OPAQUE: the verb invokes a server-side script plan cannot
+		// inspect. This is ALLOWED (it's how existing daily scripts get wrapped
+		// without rewriting them into typed verbs) — but the approver owns the
+		// script's behavior, and it is only safe if the agent cannot alter it.
+		if wr.scriptPath != "" {
+			out = append(out, Finding{
+				RuleID: "SSH-SCRIPT-OPAQUE", Severity: SevWarn,
+				Resource: wr.alias + ":" + wr.action,
+				Summary:  "runs server-side script " + wr.scriptPath + " — plan cannot inspect its behavior",
+				Fix:      "approve only if " + wr.scriptPath + " is root-owned and not agent-writable on the target, and treats parameters as data not code (you accept responsibility for its behavior); add SSH-SCRIPT-OPAQUE to bounds.blocking_rules to forbid opaque server-side scripts",
+			})
+		}
 	}
+	// SSH-SCRIPT-WRITABLE: a write-capable verb on a target can overwrite a script
+	// another verb runs there — the agent could swap the code before running it.
+	out = append(out, scriptWritableFindings(writes, targetByAlias)...)
 
 	// SSH-PARALLEL-PATH: the proposal adds ssh target(s) AND the agent's user has
 	// readable private keys in ~/.ssh. Those keys are a POTENTIAL direct path to
@@ -657,7 +673,97 @@ func anyOf(items []string) string {
 
 // sshWrite is one (target, custom-verb) pair SSH-WRITE surfaces, with the verb's
 // description and the exact command it runs for the operator to confirm.
-type sshWrite struct{ alias, action, desc, cmdHint string }
+type sshWrite struct{ alias, action, desc, cmdHint, command, scriptPath string }
+
+// scriptInvoked returns the absolute-path program a command template runs as its
+// first token — a server-side script/binary whose behavior plan cannot inspect —
+// or "" for an inline command built from standard tools the reviewer can read in
+// full.
+func scriptInvoked(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	if strings.HasPrefix(fields[0], "/") {
+		return fields[0]
+	}
+	return ""
+}
+
+var redirectToPlaceholderRE = regexp.MustCompile(`>\s*\{`)
+
+// isPathWriter reports whether a command template writes to a {path}-style
+// parameter — the write_file shape (`cat > {path}`, `tee {path}`, `dd of={path}`).
+// Such a verb can overwrite any file within the target's path allow-list.
+func isPathWriter(command string) bool {
+	if redirectToPlaceholderRE.MatchString(command) {
+		return true
+	}
+	fields := strings.Fields(command)
+	if len(fields) > 0 && placeholderRE.MatchString(command) {
+		switch filepath.Base(fields[0]) {
+		case "tee", "dd":
+			return true
+		}
+	}
+	return false
+}
+
+type scriptRef struct{ action, path string }
+
+// scriptWritableFindings flags SSH-SCRIPT-WRITABLE: on a target that grants both a
+// script-running verb and a path-writer verb, if the script lives within the
+// target's writable path allow-list, the agent can overwrite the script through
+// the write verb and then run it — arbitrary execution behind a "safe" verb. This
+// is the code-custody analog of an agent-readable SSH key: the executed code must
+// be agent-immutable.
+func scriptWritableFindings(writes []sshWrite, targetByAlias map[string]admin.SSHTarget) []Finding {
+	type info struct {
+		scripts   []scriptRef
+		hasWriter bool
+	}
+	byTarget := map[string]*info{}
+	for _, wr := range writes {
+		ti := byTarget[wr.alias]
+		if ti == nil {
+			ti = &info{}
+			byTarget[wr.alias] = ti
+		}
+		if wr.scriptPath != "" {
+			ti.scripts = append(ti.scripts, scriptRef{action: wr.action, path: wr.scriptPath})
+		}
+		if isPathWriter(wr.command) {
+			ti.hasWriter = true
+		}
+	}
+	aliases := make([]string, 0, len(byTarget))
+	for a := range byTarget {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+
+	var out []Finding
+	for _, alias := range aliases {
+		ti := byTarget[alias]
+		if !ti.hasWriter {
+			continue
+		}
+		t := targetByAlias[alias]
+		allowed := append(append([]string{}, t.AllowedPaths...), t.AllowedPathPrefixes...)
+		for _, s := range ti.scripts {
+			if underAny(s.path, allowed) == "" {
+				continue
+			}
+			out = append(out, Finding{
+				RuleID: "SSH-SCRIPT-WRITABLE", Severity: SevHigh,
+				Resource: alias + ":" + s.action,
+				Summary:  "a write-capable verb on " + alias + " can overwrite " + s.path + " — the agent could swap the script before running it (arbitrary execution)",
+				Fix:      "place " + s.path + " outside the target's writable allowed_paths/allowed_path_prefixes (a root-owned path the write verbs can't reach), or drop the write grant on " + alias,
+			})
+		}
+	}
+	return out
+}
 
 // customSSHWrites returns the (target, action) pairs an allow rule grants on a
 // defined ssh-executor verb that is mutating (not a curated read-only inspection
@@ -683,17 +789,19 @@ func customSSHWrites(allows []policy.Rule, effTargets []admin.SSHTarget, defs ma
 		if action.Description != "" {
 			desc = " — " + action.Description
 		}
+		command := strings.TrimSpace(action.Command)
 		cmdHint := " (see its app definition)"
-		if c := strings.TrimSpace(action.Command); c != "" {
-			cmdHint = "; it runs: " + c
+		if command != "" {
+			cmdHint = "; it runs: " + command
 		}
+		scriptPath := scriptInvoked(command)
 		for _, alias := range targetsForRule(r, effTargets) {
 			key := alias + "\x00" + r.Action
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, sshWrite{alias: alias, action: r.Action, desc: desc, cmdHint: cmdHint})
+			out = append(out, sshWrite{alias: alias, action: r.Action, desc: desc, cmdHint: cmdHint, command: command, scriptPath: scriptPath})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
