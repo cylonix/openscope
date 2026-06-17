@@ -18,9 +18,10 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/openscoped ./cmd/openscoped && \
     CGO_ENABLED=0 go build -trimpath -o /out/openscope ./cmd/openscope
 
-# alpine, not distroless: the ssh executor shells out to the openssh client.
+# alpine, not distroless: the ssh executor shells out to the openssh client, and
+# the ssm executor shells out to the aws CLI (no AWS SDK in the broker module).
 FROM alpine:3.21
-RUN apk add --no-cache openssh-client ca-certificates tzdata \
+RUN apk add --no-cache openssh-client aws-cli ca-certificates tzdata \
     && addgroup -S openscope && adduser -S -G openscope openscope
 COPY --from=build /out/openscoped /out/openscope /usr/local/bin/
 

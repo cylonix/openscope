@@ -86,6 +86,7 @@ type Paths struct {
 	ProtectedFoldersFile string
 	MailFiltersFile      string
 	SSHTargetsFile       string
+	SSMTargetsFile       string
 	HTTPProfilesFile     string
 	SystemCommandsFile   string
 	// AppDefinitionsFile is the root-owned applied-verb registry — custom verb
@@ -159,6 +160,7 @@ func DefaultPaths() (Paths, error) {
 		ProtectedFoldersFile: filepath.Join(adminDir, "protected_folders.yaml"),
 		MailFiltersFile:      filepath.Join(adminDir, "mail_filters.yaml"),
 		SSHTargetsFile:       filepath.Join(adminDir, "ssh_targets.yaml"),
+		SSMTargetsFile:       filepath.Join(adminDir, "ssm_targets.yaml"),
 		HTTPProfilesFile:     filepath.Join(adminDir, "http_profiles.yaml"),
 		SystemCommandsFile:   filepath.Join(adminDir, "system_commands.yaml"),
 		AppDefinitionsFile:   filepath.Join(adminDir, "app_definitions.yaml"),

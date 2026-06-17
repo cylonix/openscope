@@ -13,6 +13,7 @@ import (
 	appleexec "github.com/openscope/openscope/executor/applescript"
 	"github.com/openscope/openscope/executor/httpexec"
 	"github.com/openscope/openscope/executor/sshexec"
+	"github.com/openscope/openscope/executor/ssmexec"
 	"github.com/openscope/openscope/executor/systemexec"
 )
 
@@ -23,6 +24,7 @@ func defaultExecutors(paths config.Paths) map[string]executor.Runner {
 		"applescript": chooseAppleExecutor(os.Geteuid(), os.Getenv("OPENSCOPE_SESSION_SOCKET")),
 		"http":        httpexec.Executor{Paths: paths},
 		"ssh":         sshexec.Executor{Paths: paths},
+		"ssm":         ssmexec.Executor{Paths: paths},
 		"system":      systemexec.Executor{Paths: paths},
 	}
 }

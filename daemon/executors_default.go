@@ -10,6 +10,7 @@ import (
 	"github.com/openscope/openscope/executor"
 	"github.com/openscope/openscope/executor/httpexec"
 	"github.com/openscope/openscope/executor/sshexec"
+	"github.com/openscope/openscope/executor/ssmexec"
 	"github.com/openscope/openscope/executor/systemexec"
 )
 
@@ -21,6 +22,7 @@ func defaultExecutors(paths config.Paths) map[string]executor.Runner {
 	return map[string]executor.Runner{
 		"http":   httpexec.Executor{Paths: paths},
 		"ssh":    sshexec.Executor{Paths: paths},
+		"ssm":    ssmexec.Executor{Paths: paths},
 		"system": systemexec.Executor{Paths: paths},
 	}
 }

@@ -1,0 +1,49 @@
+version: 1
+app:
+  name: ssm
+  display_name: Scoped SSM
+  executor: ssm
+  description: Protected brokered commands on EC2 instances over AWS Systems Manager (no SSH, no keys)
+  security_mode: protected
+
+# Each verb runs a fixed command template via AWS-RunShellScript — broker-
+# controlled, never agent-supplied. Targets (instance id + region + allow-lists)
+# live in <AdminDir>/ssm_targets.yaml; the broker's AWS identity is the credential
+# under custody (the executor refuses if it is agent-readable).
+actions:
+  check_host:
+    description: Check reachability and basic host identity for a named SSM target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+    command: "hostname; whoami; id -u; uname -s; uname -r"
+
+  tail_logs:
+    description: Tail the last 200 log lines for an approved systemd service on a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: service
+        type: string
+        required: true
+        policy_key: service
+        constraint: service
+    command: "journalctl -u {service} -n 200 --no-pager"
+
+  read_file:
+    description: Read an approved file from a target
+    parameters:
+      - name: target
+        type: string
+        required: true
+        policy_key: target
+      - name: path
+        type: string
+        required: true
+        policy_key: path
+        constraint: path
+    command: "cat -- {path}"
