@@ -30,6 +30,7 @@ type Proposal struct {
 	Kind           string        `yaml:"kind"`
 	Metadata       Metadata      `yaml:"metadata"`
 	SSHTargets     SSHTargetsBlk `yaml:"ssh_targets"`
+	SSMTargets     SSMTargetsBlk `yaml:"ssm_targets"`
 	SystemCommands SystemBlk     `yaml:"system_commands"`
 	Apps           AppsBlk       `yaml:"apps"`
 	Policy         PolicyBlk     `yaml:"policy"`
@@ -54,6 +55,11 @@ type AuthoredBy struct {
 
 type SSHTargetsBlk struct {
 	Add    []admin.SSHTarget `yaml:"add"`
+	Remove []string          `yaml:"remove"`
+}
+
+type SSMTargetsBlk struct {
+	Add    []admin.SSMTarget `yaml:"add"`
 	Remove []string          `yaml:"remove"`
 }
 
@@ -206,6 +212,11 @@ func (p Proposal) Validate() error {
 	for _, t := range p.SSHTargets.Add {
 		if err := t.Validate(); err != nil {
 			return fmt.Errorf("ssh_targets.add: %w", err)
+		}
+	}
+	for _, t := range p.SSMTargets.Add {
+		if err := t.Validate(); err != nil {
+			return fmt.Errorf("ssm_targets.add: %w", err)
 		}
 	}
 	for i := range p.Apps.Add {

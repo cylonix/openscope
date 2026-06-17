@@ -15,6 +15,7 @@ import (
 // the proposal in isolation.
 type LiveState struct {
 	SSHTargets admin.SSHTargets
+	SSMTargets admin.SSMTargets
 	System     admin.SystemCommands
 	Policy     policy.File
 	Agents     []string
@@ -22,6 +23,10 @@ type LiveState struct {
 
 func LoadLiveState(paths config.Paths) (LiveState, error) {
 	targets, err := admin.LoadSSHTargetsOrDefault(paths)
+	if err != nil {
+		return LiveState{}, err
+	}
+	ssmTargets, err := admin.LoadSSMTargetsOrDefault(paths)
 	if err != nil {
 		return LiveState{}, err
 	}
@@ -39,6 +44,7 @@ func LoadLiveState(paths config.Paths) (LiveState, error) {
 	}
 	return LiveState{
 		SSHTargets: targets,
+		SSMTargets: ssmTargets,
 		System:     system,
 		Policy:     pol,
 		Agents:     reg.Agents,

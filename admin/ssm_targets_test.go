@@ -73,3 +73,32 @@ func TestSSMTargetAllowLists(t *testing.T) {
 		t.Error("disallowed path matched")
 	}
 }
+
+func TestAddRemoveSSMTargetRoundtrip(t *testing.T) {
+	paths := config.Paths{SSMTargetsFile: filepath.Join(t.TempDir(), "ssm_targets.yaml")}
+	if _, added, err := AddSSMTarget(paths, SSMTarget{Alias: "prod", InstanceID: "i-1", Region: "us-west-2"}); err != nil || !added {
+		t.Fatalf("add: err=%v added=%v", err, added)
+	}
+	if _, added, _ := AddSSMTarget(paths, SSMTarget{Alias: "prod", InstanceID: "i-1", Region: "us-west-2"}); added {
+		t.Error("re-adding the same alias should be a no-op")
+	}
+	got, _ := LoadSSMTargetsOrDefault(paths)
+	if _, ok := FindSSMTarget(got, "prod"); !ok {
+		t.Fatal("prod not persisted")
+	}
+	if _, removed, _ := RemoveSSMTarget(paths, "prod"); !removed {
+		t.Error("remove should report removed")
+	}
+}
+
+func TestSSMTargetValidate(t *testing.T) {
+	if err := (SSMTarget{Alias: "x"}).Validate(); err == nil {
+		t.Error("missing instance_id/region should fail")
+	}
+	if err := (SSMTarget{Alias: "x", InstanceID: "i-1", Region: "us-west-2", AllowedPaths: []string{"rel"}}).Validate(); err == nil {
+		t.Error("relative allowed path should fail")
+	}
+	if err := (SSMTarget{Alias: "x", InstanceID: "i-1", Region: "us-west-2"}).Validate(); err != nil {
+		t.Errorf("valid target rejected: %v", err)
+	}
+}

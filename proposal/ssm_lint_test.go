@@ -119,3 +119,30 @@ policy:
 		t.Error("no ssm grant → no SSM-DEPLOY-CONTRACT")
 	}
 }
+
+func TestProposalParsesSSMTargets(t *testing.T) {
+	p := parse(t, `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssm_targets:
+  add:
+    - {alias: prod, instance_id: i-0abc, region: us-west-2, allowed_services: [orders-api]}
+`)
+	if len(p.SSMTargets.Add) != 1 || p.SSMTargets.Add[0].InstanceID != "i-0abc" {
+		t.Fatalf("ssm_targets not parsed: %+v", p.SSMTargets)
+	}
+}
+
+func TestProposalRejectsBadSSMTarget(t *testing.T) {
+	if _, err := Parse([]byte(`
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+ssm_targets:
+  add:
+    - {alias: prod, region: us-west-2}
+`), "test.yaml"); err == nil {
+		t.Error("ssm target missing instance_id should fail to parse")
+	}
+}

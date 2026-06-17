@@ -110,6 +110,75 @@ func normalizeSSMTargets(targets SSMTargets) SSMTargets {
 	return targets
 }
 
+func (t SSMTarget) Validate() error {
+	if strings.TrimSpace(t.Alias) == "" {
+		return fmt.Errorf("ssm target alias is required")
+	}
+	if strings.TrimSpace(t.InstanceID) == "" {
+		return fmt.Errorf("ssm target %q instance_id is required", t.Alias)
+	}
+	if strings.TrimSpace(t.Region) == "" {
+		return fmt.Errorf("ssm target %q region is required", t.Alias)
+	}
+	for _, p := range append(append([]string{}, t.AllowedPaths...), t.AllowedPathPrefixes...) {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("ssm target %q allowed path %q must be absolute", t.Alias, p)
+		}
+	}
+	return nil
+}
+
+// SaveDefaultSSMTargets writes the targets to the root-owned admin location.
+func SaveDefaultSSMTargets(paths config.Paths, targets SSMTargets) error {
+	return SaveSSMTargets(paths.SSMTargetsFile, targets)
+}
+
+// AddSSMTarget appends a target if its alias is new (keeps the existing target on
+// alias collision, like AddSSHTarget); the bool reports whether it was added.
+func AddSSMTarget(paths config.Paths, target SSMTarget) (SSMTargets, bool, error) {
+	targets, err := LoadSSMTargetsOrDefault(paths)
+	if err != nil {
+		return SSMTargets{}, false, err
+	}
+	target = NormalizeSSMTarget(target)
+	if err := target.Validate(); err != nil {
+		return SSMTargets{}, false, err
+	}
+	for _, existing := range targets.Targets {
+		if existing.Alias == target.Alias {
+			return targets, false, nil
+		}
+	}
+	targets.Targets = append(targets.Targets, target)
+	if err := SaveDefaultSSMTargets(paths, targets); err != nil {
+		return SSMTargets{}, false, err
+	}
+	return normalizeSSMTargets(targets), true, nil
+}
+
+func RemoveSSMTarget(paths config.Paths, alias string) (SSMTargets, bool, error) {
+	targets, err := LoadSSMTargetsOrDefault(paths)
+	if err != nil {
+		return SSMTargets{}, false, err
+	}
+	alias = strings.TrimSpace(alias)
+	index := -1
+	for i, target := range targets.Targets {
+		if target.Alias == alias {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return targets, false, nil
+	}
+	targets.Targets = append(targets.Targets[:index], targets.Targets[index+1:]...)
+	if err := SaveDefaultSSMTargets(paths, targets); err != nil {
+		return SSMTargets{}, false, err
+	}
+	return normalizeSSMTargets(targets), true, nil
+}
+
 func (t SSMTargets) Validate() error {
 	if t.Version == 0 {
 		return fmt.Errorf("ssm targets version is required")

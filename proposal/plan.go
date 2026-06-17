@@ -28,6 +28,8 @@ type MachineInfo struct {
 type Changes struct {
 	SSHTargetsAdded   int
 	SSHTargetsRemoved int
+	SSMTargetsAdded   int
+	SSMTargetsRemoved int
 	SystemFirstWrite  bool
 	NewManagers       int
 	NewPackages       int
@@ -250,6 +252,8 @@ func changes(p Proposal, live LiveState) Changes {
 	c := Changes{
 		SSHTargetsAdded:   len(p.SSHTargets.Add),
 		SSHTargetsRemoved: len(p.SSHTargets.Remove),
+		SSMTargetsAdded:   len(p.SSMTargets.Add),
+		SSMTargetsRemoved: len(p.SSMTargets.Remove),
 		SystemFirstWrite:  len(live.System.Packages.Managers) == 0 && len(live.System.Packages.Allowed) == 0,
 		NewManagers:       len(p.SystemCommands.Packages.Managers.Add),
 		NewPackages:       len(p.SystemCommands.Packages.Allowed.Add),

@@ -480,6 +480,17 @@ func applyMutations(paths config.Paths, p proposal.Proposal, liveSystem admin.Sy
 		}
 	}
 
+	for _, alias := range p.SSMTargets.Remove {
+		if _, _, err := admin.RemoveSSMTarget(paths, alias); err != nil {
+			return fmt.Errorf("remove ssm target %q: %w", alias, err)
+		}
+	}
+	for _, t := range p.SSMTargets.Add {
+		if _, _, err := admin.AddSSMTarget(paths, t); err != nil {
+			return fmt.Errorf("add ssm target %q: %w", t.Alias, err)
+		}
+	}
+
 	eff := p.EffectiveSystem(liveSystem)
 	if err := admin.SaveDefaultSystemCommands(paths, eff); err != nil {
 		return fmt.Errorf("write system commands: %w", err)
