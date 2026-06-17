@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyAgentSSMExecution",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:StartSession",
+        "ssm:ResumeSession",
+        "ssm:CreateDocument",
+        "ssm:UpdateDocument"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

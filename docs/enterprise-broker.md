@@ -14,7 +14,7 @@ agent (device/CI) --Bearer osk_agent_*--> openscoped (VPC) --ssh/http--> privile
                                        policies.yaml + audit.jsonl
 ```
 
-On Linux the broker ships the `ssh`, `http`, and `system` executors. The
+On Linux the broker ships the `ssh`, `ssm`, `http`, and `system` executors. The
 `applescript` executor is macOS-only; requests for it fail with a clear
 "not available on this platform" error.
 
@@ -174,6 +174,35 @@ the proxy's `X-Forwarded-Groups`). A rule must name at least one of `agent`,
 per-target allow-lists in `ssh_targets.yaml` still bound which services,
 paths, and upload sources are reachable.
 
+## Governing AWS instances over SSM
+
+The `ssm` executor reaches EC2 instances over AWS Systems Manager (Run Command) —
+**no inbound SSH, no SSH key, no open port 22**. It shells out to the `aws` CLI
+(no AWS SDK in the broker), runs each verb's fixed command template via
+`AWS-RunShellScript`, and bounds path/service params with the same allow-lists as
+the SSH executor. Targets live in `<AdminDir>/ssm_targets.yaml` (alias, instance
+id, region, allow-lists).
+
+It is governed exactly like SSH, with one extra control because the broker's
+credential is an AWS identity, not a file:
+
+- **Credential custody.** The broker uses its **EC2 instance role** (no static
+  secret) or a root-owned credentials file (`AWS_SHARED_CREDENTIALS_FILE`); the
+  executor refuses to run if its credentials file is agent-readable (the cred
+  analog of an agent-readable SSH key).
+- **The binding control — deny the agent SSM in IAM.** Custody alone is not
+  enough: the *agent's own* AWS identity must be denied `ssm:SendCommand` /
+  `StartSession`, or it could call `aws ssm` directly and bypass the broker.
+  Apply the templates in `deploy/broker/iam/` (`agent-ssm-deny.policy.json` as a
+  permission boundary on the agent; `broker-ssm-role.policy.json` as the broker's
+  least-privilege allow). `plan` emits `SSM-DEPLOY-CONTRACT` to remind you, but
+  cannot verify the IAM side. The guard hook denying raw `aws ssm` is
+  defense-in-depth, not the boundary (it can't intercept boto3).
+
+`plan` blocks an `ssm` verb whose command is a generic runner
+(`SSM-RUNSHELL-ARBITRARY` — arbitrary root via RunShellScript) and warns on a
+grant with no target constraint (`SSM-BROAD-SCOPE`).
+
 ## Client (agent) side
 
 ```bash
@@ -208,3 +237,5 @@ one unified tail.
 - 1 MiB request-body cap; 5s/30s/60s read/write timeouts
 - Per-token rate limit (10 rps, burst 30) → HTTP 429
 - `X-Request-Id` on every response, recorded in the audit log
+- SSM: broker credential custody (instance role / root-owned creds) + the IAM
+  agent-SSM deny (`deploy/broker/iam/`); `plan` blocks generic-runner SSM verbs
