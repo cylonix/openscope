@@ -1,6 +1,11 @@
 # Spec: SSM executor + code-immutability governance
 
-Status: draft / design. Drives a multi-phase build. No code yet.
+Status: **Phases 1–4 implemented** (branch `phase1-code-custody`, commits
+`3ebf53f`, `c789d8e`, `b6045f0`, `3c87928`). This document is the design of
+record; those commits are the code. One deviation from the original sketch: the
+SSH code-custody check is plan-time (the executed script lives on the remote
+target, not a local file), so Phase 1 shipped as lint rather than an executor
+file-stat — see Phase 1 below. Remaining follow-ups are under "Out of scope".
 
 ## Why
 
@@ -69,7 +74,12 @@ guarantee it can't make.
 
 ---
 
-## Phase 1 — code-immutability rule + SSH retrofit (no AWS; ship first)
+## Phase 1 — code-immutability rule + SSH retrofit (no AWS; ship first) ✅ DONE
+<!-- Shipped as plan-time lint (3ebf53f): SSH-SCRIPT-OPAQUE (warn, allow opaque
+server-side scripts) + SSH-SCRIPT-WRITABLE (unconditional block — a writer verb
+can overwrite a run-script = agent-mutable code). The remote-script reality made
+a local executor file-stat N/A; the composition gate covers it. -->
+
 
 This lands value immediately, de-risks the principle, and is fully unit-testable.
 
@@ -100,7 +110,12 @@ Net: wrapping an existing immutable script becomes **first-class** for SSH —
 
 ---
 
-## Phase 2 — `ssmexec` executor
+## Phase 2 — `ssmexec` executor ✅ DONE
+<!-- c789d8e: executor/ssmexec (aws CLI shell-out, no SDK) + credaudit + admin
+ssm_targets + bundled ssm app (check_host/tail_logs/read_file) + Dockerfile
+awscli. Deferred: pinned custom-document verbs (appdef Document field), structured
+built-in output, request-id/user in the SSM --comment. -->
+
 
 Mirror `executor/sshexec/` with SSM as transport.
 
@@ -139,7 +154,10 @@ Mirror `executor/sshexec/` with SSM as transport.
 
 ---
 
-## Phase 3 — SSM `plan` lint ruleset (tiered)
+## Phase 3 — SSM `plan` lint ruleset (tiered) ✅ DONE
+<!-- b6045f0: SSM-RUNSHELL-ARBITRARY (block), SSM-DEPLOY-CONTRACT (warn),
+SSM-BROAD-SCOPE (warn); proposals may now ship executor: ssm verbs. -->
+
 
 Reuse `proposal/lint.go` (`Severity`, `systemDeputies`, `systemWriters`,
 `placeholderRE`). Tiers: **block** (un-approvable) / **recommend-reject**
@@ -162,7 +180,11 @@ surfaces as `SSM-AGENT-NOT-DENIED` rather than a file check).
 
 ---
 
-## Phase 4 — deployment contract + defense-in-depth
+## Phase 4 — deployment contract + defense-in-depth ✅ DONE
+<!-- 3c87928: deploy/broker/iam/ (agent-ssm-deny boundary/SCP + least-priv
+broker-ssm-role + README) and the guard hook denying raw aws ssm send-command /
+start-session and ssh i-…; docs/enterprise-broker.md SSM section. -->
+
 
 - **Agent-deny is the load-bearing control.** Ship an IAM **permission-boundary
   / SCP template** that denies the agent principal `ssm:SendCommand` /
