@@ -33,9 +33,16 @@ type Event struct {
 	// daemon's HTTP listener (empty for the local Unix socket — the JSONL
 	// shape is unchanged for existing local deployments).
 	RequestID   string `json:"request_id,omitempty"`
-	Transport   string `json:"transport,omitempty"` // "unix" | "http"
+	Transport   string `json:"transport,omitempty"` // "unix" | "http" | "reflector"
 	RemoteAddr  string `json:"remote_addr,omitempty"`
 	TokenPrefix string `json:"token_prefix,omitempty"` // never the token itself
+
+	// Reflector delegation context, set when the request arrived over a
+	// cross-org reflector session. Agent stays the issuer (who delegated);
+	// ExternalAgent records the advisory delegatee; SessionID ties the events
+	// of one share session together.
+	SessionID     string `json:"session_id,omitempty"`
+	ExternalAgent string `json:"external_agent,omitempty"`
 
 	// Proposal apply context, set by `openscope apply` (empty otherwise).
 	ProposalSHA256 string `json:"proposal_sha256,omitempty"`

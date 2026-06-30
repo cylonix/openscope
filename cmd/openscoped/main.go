@@ -80,6 +80,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "control plane enabled: %s\n", cpCfg.BaseURL)
 	}
 
+	// Cross-org reflector (outbound delegation tunnel): enabled by
+	// OPENSCOPE_REFLECTOR_URL. Dials OUT to a blind relay on demand — no
+	// inbound port, no always-on accept loop.
+	if mgr, rerr := daemon.NewReflectorManager(paths); rerr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "reflector config error: %v\n", rerr)
+		os.Exit(daemon.ExitConfigError)
+	} else if mgr != nil {
+		service.Reflector = mgr
+		fmt.Fprintf(os.Stderr, "reflector enabled: %s\n", paths.ReflectorURL)
+	}
+
 	// Fail fast on unsafe network configuration (plaintext on non-loopback,
 	// anonymous mode off-loopback) before binding anything.
 	if err := daemon.ValidateHTTPConfig(paths); err != nil {

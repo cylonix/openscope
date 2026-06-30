@@ -20,7 +20,9 @@ import (
 	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
+	"github.com/openscope/openscope/passport"
 	"github.com/openscope/openscope/policy"
+	"github.com/openscope/openscope/reflector"
 	"github.com/openscope/openscope/resources"
 )
 
@@ -49,6 +51,11 @@ type Service struct {
 	// cpclient.Client.Record satisfies that. Never receives params/bodies.
 	Usage func(cpclient.UsageEvent)
 
+	// Reflector, when non-nil, holds the live cross-org delegation sessions
+	// (enabled by OPENSCOPE_REFLECTOR_URL). The `reflector` control verb and the
+	// reflected-request dispatch use it; nil means the feature is off.
+	Reflector *reflector.Manager
+
 	// meta carries per-request transport context (set by HandleWithMeta on
 	// the value copy; Service is used by value so this never races).
 	meta RequestMeta
@@ -58,13 +65,14 @@ type Service struct {
 // Empty for local Unix-socket requests.
 type RequestMeta struct {
 	RequestID   string
-	Transport   string // "unix" | "http"
+	Transport   string // "unix" | "http" | "reflector"
 	RemoteAddr  string
 	TokenPrefix string
 
 	// AuthMethod records how the principal was authenticated: "proxy" (SSO
 	// reverse proxy), "token" (bearer token), "anon" (legacy localhost
-	// bridge), or "" → defaulted to "unix" in Handle for local-socket calls.
+	// bridge), "reflector" (cross-org delegation session), or "" → defaulted to
+	// "unix" in Handle for local-socket calls.
 	AuthMethod string
 
 	// User and Groups mirror the request principal, copied here in Handle so
@@ -72,6 +80,14 @@ type RequestMeta struct {
 	// request through each audit call site.
 	User   string
 	Groups []string
+
+	// Reflector delegation context, set only by reflectorDispatch. SessionID
+	// and ExternalAgent are audit attribution; Attenuation, when non-nil, is the
+	// passport scope the request must also fall inside (a deny-only overlay
+	// evaluated in Handle, in addition to policy under the issuer principal).
+	SessionID     string
+	ExternalAgent string
+	Attenuation   *passport.Scope
 }
 
 func NewService(paths config.Paths) Service {
@@ -102,6 +118,16 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		s.meta.AuthMethod = "unix"
 	}
 
+	// The built-in management/diagnostic verbs below (inspect_bypass, reflector
+	// control) short-circuit BEFORE the attenuation gate, so they must never be
+	// reachable over a reflected session — otherwise an external agent could
+	// open/list/close delegation sessions or run an unscoped diagnostic as the
+	// issuer. Only the local trusted socket (or HTTP) may invoke them.
+	if s.meta.Transport == "reflector" && isLocalOnlyVerb(request) {
+		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent,
+			Error: "this verb is not available over a reflected session", ExitCode: ExitDenied}
+	}
+
 	// Built-in operator verification: read a brokered target's authorized_keys via the
 	// broker key and compare against the caller's key fingerprints, so plan/check-bypass
 	// can verify the SSH boundary without sudo (the daemon runs as root and holds the
@@ -109,6 +135,12 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 	// leaves the daemon — only the per-key verdict is returned.
 	if request.App == "ssh" && request.Action == "inspect_bypass" {
 		return s.handleInspectBypass(request)
+	}
+
+	// Reflector control verb (open/extend/close/list a cross-org delegation
+	// session). Handled here, before app/policy resolution, like inspect_bypass.
+	if request.App == "reflector" {
+		return s.handleReflectorControl(request)
 	}
 
 	loaded, err := s.loadVisibleDefinitions()
@@ -184,6 +216,27 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 				Reason:    reason,
 			})
 			return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: reason, ExitCode: ExitDenied}
+		}
+	}
+
+	// Reflector attenuation gate: when the request arrived over a delegation
+	// session, it must fall inside the passport's sanctioned scope IN ADDITION
+	// to the issuer's standing policy (evaluated just below). This deny-only
+	// overlay lives inside the chokepoint so no transport can bypass it, and it
+	// can only narrow — policy.Evaluate under the issuer is still authoritative.
+	if s.meta.Attenuation != nil {
+		if ok, why := s.meta.Attenuation.Permits(entry.Definition.App.Name, request.Action, actionContext); !ok {
+			s.recordAudit(audit.Event{
+				Timestamp: time.Now().UTC(),
+				Agent:     request.Agent,
+				App:       entry.Definition.App.Name,
+				Action:    request.Action,
+				Params:    actionContext,
+				Decision:  "deny",
+				Result:    "out_of_scope",
+				Reason:    why,
+			})
+			return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: why, ExitCode: ExitDenied}
 		}
 	}
 
@@ -400,6 +453,8 @@ func (s Service) recordAudit(event audit.Event) {
 	event.User = s.meta.User
 	event.Groups = s.meta.Groups
 	event.AuthMethod = s.meta.AuthMethod
+	event.SessionID = s.meta.SessionID
+	event.ExternalAgent = s.meta.ExternalAgent
 	_ = audit.Append(s.Paths.AuditFile, event)
 
 	// Control-plane metering: the audit event minus params (metadata only).

@@ -100,6 +100,10 @@ func Run(args []string) int {
 		return runApply(paths, args[1:])
 	case "capabilities", "caps":
 		return runCapabilities(paths, args[1:])
+	case "share":
+		return runShare(paths, args[1:])
+	case "contact":
+		return runContact(paths, args[1:])
 	default:
 		return runProtectedAction(paths, args)
 	}

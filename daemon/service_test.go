@@ -12,9 +12,11 @@ import (
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/capabilities"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/executor"
 	"github.com/openscope/openscope/ipc"
+	"github.com/openscope/openscope/passport"
 )
 
 type stubExecutor struct {
@@ -236,6 +238,83 @@ func TestServiceHandleSSHRequestAuditsTargetAndService(t *testing.T) {
 	if !strings.Contains(text, `"target":"prod-api-1"`) || !strings.Contains(text, `"service":"web"`) {
 		t.Fatalf("expected audit to include target and service, got:\n%s", text)
 	}
+}
+
+// TestServiceHandleReflectorAttenuation proves the deny-only passport overlay:
+// a reflected request must fall inside the passport scope AND the issuer's
+// policy; the scope can only narrow below policy; the request executes (and is
+// audited) as the issuer, tagged with the session + external delegatee.
+func TestServiceHandleReflectorAttenuation(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{
+		ConfigDir:            filepath.Join(home, ".openscope"),
+		AppsDir:              filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:               filepath.Join(home, ".openscope", "run"),
+		StateDir:             filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:         filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:           filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:            filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile:      filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:           filepath.Join(home, ".openscope", "run", "openscoped.sock"),
+		AdminDir:             filepath.Join(home, "admin"),
+		ProtectedFoldersFile: filepath.Join(home, "admin", "protected_folders.yaml"),
+		MailFiltersFile:      filepath.Join(home, "admin", "mail_filters.yaml"),
+		SSHTargetsFile:       filepath.Join(home, "admin", "ssh_targets.yaml"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("EnsureLayout returned error: %v", err)
+	}
+
+	writeFile(t, paths.AgentsFile, "version: 1\nagents:\n  - dev-a\n")
+	// Policy lets dev-a tail logs on prod-api-1 for ANY service (no service constraint).
+	writeFile(t, paths.PoliciesFile, "version: 1\nrules:\n  - effect: allow\n    agent: dev-a\n    app: ssh\n    action: tail_logs\n    constraints:\n      target: prod-api-1\n")
+
+	service := NewService(paths)
+	service.Executors["ssh"] = stubExecutor{result: executor.Result{Stdout: `{"output":"ok"}`}}
+
+	// The passport narrows dev-a's surface to service=web only.
+	scope := passport.NewScope([]capabilities.Capability{{
+		App: "ssh", Action: "tail_logs",
+		Params: []capabilities.Param{{Name: "service", PolicyKey: "service", Pinned: true, Fixed: "web"}},
+	}})
+	meta := RequestMeta{Transport: "reflector", AuthMethod: "reflector", SessionID: "sess-1", ExternalAgent: "vendor-b", Attenuation: &scope}
+
+	mkReq := func(svc string) ipc.Request {
+		return ipc.Request{App: "ssh", Action: "tail_logs", Agent: "dev-a",
+			Params: map[string]string{"target": "prod-api-1", "service": svc, "lines": "20"}, Mode: "json"}
+	}
+
+	// In scope: service=web → both gates pass.
+	if resp := service.HandleWithMeta(mkReq("web"), meta); !resp.OK {
+		t.Fatalf("in-scope request should succeed, got %#v", resp)
+	}
+	// Out of scope: service=db → denied by the overlay even though policy allows it.
+	if resp := service.HandleWithMeta(mkReq("db"), meta); resp.OK || resp.ExitCode != ExitDenied {
+		t.Fatalf("out-of-scope request should be denied, got %#v", resp)
+	}
+	// Same request with NO overlay → policy alone allows it, proving the overlay is the blocker.
+	if resp := service.HandleWithMeta(mkReq("db"), RequestMeta{}); !resp.OK {
+		t.Fatalf("without the overlay, policy allows service=db; got %#v", resp)
+	}
+
+	text := string(mustReadFile(t, paths.AuditFile))
+	if !strings.Contains(text, `"result":"out_of_scope"`) {
+		t.Fatalf("expected an out_of_scope audit result, got:\n%s", text)
+	}
+	for _, want := range []string{`"transport":"reflector"`, `"external_agent":"vendor-b"`, `"session_id":"sess-1"`, `"agent":"dev-a"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected audit to contain %s, got:\n%s", want, text)
+		}
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) returned error: %v", path, err)
+	}
+	return data
 }
 
 func writeFile(t *testing.T, path, content string) {

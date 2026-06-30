@@ -66,19 +66,19 @@ func auditFilePath(systemMode bool, adminDir, configDir string) string {
 }
 
 type Paths struct {
-	HomeDir              string
-	ConfigDir            string
-	AppsDir              string
-	RunDir               string
-	StateDir             string
-	PoliciesFile         string
-	AgentsFile           string
-	AuditFile            string
+	HomeDir      string
+	ConfigDir    string
+	AppsDir      string
+	RunDir       string
+	StateDir     string
+	PoliciesFile string
+	AgentsFile   string
+	AuditFile    string
 	// LegacyPoliciesFile is the pre-migration location (<ConfigDir>/policies.yaml).
 	// Policy now lives root-owned in AdminDir; this is a read-only fallback so an
 	// install upgraded before its next `sudo apply` keeps enforcing its policy.
-	LegacyPoliciesFile string
-	EnabledAppsFile    string
+	LegacyPoliciesFile   string
+	EnabledAppsFile      string
 	SocketPath           string
 	HTTPListenAddr       string
 	HTTPURL              string
@@ -124,6 +124,15 @@ type Paths struct {
 	// Client side: token + private-CA bundle for calls to a remote broker.
 	ClientToken  string // OPENSCOPE_TOKEN
 	ClientCAFile string // OPENSCOPE_HTTP_CA
+
+	// Cross-org reflector (outbound delegation tunnel). ReflectorURL, when set,
+	// enables the daemon's reflector manager (the blind relay base URL it dials
+	// OUT to). ReflectorIdentityFile holds the daemon's long-term Ed25519
+	// identity (root-owned; its fingerprint is what external clients pin).
+	// ContactsFile maps `--to <alias>` to a registered recipient public key.
+	ReflectorURL          string // OPENSCOPE_REFLECTOR_URL
+	ReflectorIdentityFile string // <AdminDir>/reflector_identity
+	ContactsFile          string // <ConfigDir>/contacts.yaml
 }
 
 func DefaultPaths() (Paths, error) {
@@ -185,6 +194,9 @@ func DefaultPaths() (Paths, error) {
 	paths.AuthPepper = os.Getenv("OPENSCOPE_AUTH_PEPPER")
 	paths.ClientToken = os.Getenv("OPENSCOPE_TOKEN")
 	paths.ClientCAFile = os.Getenv("OPENSCOPE_HTTP_CA")
+	paths.ReflectorURL = os.Getenv("OPENSCOPE_REFLECTOR_URL")
+	paths.ReflectorIdentityFile = filepath.Join(adminDir, "reflector_identity")
+	paths.ContactsFile = filepath.Join(configDir, "contacts.yaml")
 
 	return paths, nil
 }
