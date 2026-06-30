@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace-manifest.json",
+  "name": "openscope",
+  "owner": {
+    "name": "OpenScope (Cylonix / EZBLOCK)",
+    "url": "https://github.com/cylonix/openscope"
+  },
+  "description": "OpenScope plugins for Claude Code: route privileged and production access (SSH, sudo, brokered macOS apps) through the OpenScope action broker.",
+  "plugins": [
+    {
+      "name": "openscope",
+      "source": "./plugins/openscope",
+      "description": "Govern Claude Code with the OpenScope action broker: a skill that teaches the agent to route privileged/production access through `openscope`, plus a PreToolUse guard hook that denies raw ssh/sudo to governed hosts and direct edits of broker config.",
+      "category": "security",
+      "keywords": ["openscope", "broker", "ssh", "sudo", "privileged", "audit", "governance"]
+    }
+  ]
+}
