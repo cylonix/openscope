@@ -18,6 +18,7 @@ import (
 	"github.com/openscope/openscope/appdef"
 	"github.com/openscope/openscope/authtoken"
 	"github.com/openscope/openscope/buildinfo"
+	"github.com/openscope/openscope/capabilities"
 	"github.com/openscope/openscope/config"
 	"github.com/openscope/openscope/cpclient"
 	"github.com/openscope/openscope/daemon"
@@ -27,7 +28,6 @@ import (
 	"github.com/openscope/openscope/ipc"
 	"github.com/openscope/openscope/output"
 	"github.com/openscope/openscope/policy"
-	"github.com/openscope/openscope/resources"
 	"github.com/openscope/openscope/status"
 )
 
@@ -381,43 +381,26 @@ func runCapabilities(paths config.Paths, args []string) int {
 		return daemon.ExitInvalid
 	}
 
-	pf, err := policy.LoadDefault(paths)
+	res, err := capabilities.BuildFromPaths(paths, agentID)
 	if err != nil {
-		output.WriteErrorf("load policy: %v", err)
+		output.WriteErrorf("%v", err)
 		return daemon.ExitConfigError
 	}
-	defs, err := loadAllDefinitions(paths)
-	if err != nil {
-		output.WriteErrorf("load app definitions: %v", err)
-		return daemon.ExitConfigError
-	}
-	targets, _ := admin.LoadSSHTargetsOrDefault(paths) // best-effort value hints
 
-	var allows, denies []policy.Rule
-	for _, r := range pf.Rules {
-		if r.Agent != agentID {
-			continue
+	// Map the shared result back into the CLI's presentation structs so the
+	// `--json` shape and human output are unchanged.
+	caps := make([]capability, 0, len(res.Capabilities))
+	for _, rc := range res.Capabilities {
+		c := capability{App: rc.App, Action: rc.Action, Description: rc.Description, Command: rc.Command, Note: rc.Note}
+		for _, p := range rc.Params {
+			c.Params = append(c.Params, capParam{Flag: p.Flag, Type: p.Type, Required: p.Required, Fixed: p.Fixed, Hint: p.Hint})
 		}
-		if r.Effect == "deny" {
-			denies = append(denies, r)
-		} else {
-			allows = append(allows, r)
-		}
+		caps = append(caps, c)
 	}
-
-	caps := make([]capability, 0, len(allows))
-	for _, r := range allows {
-		caps = append(caps, buildCapability(agentID, r, defs, targets))
+	denies := make([]policy.Rule, 0, len(res.Denied))
+	for _, d := range res.Denied {
+		denies = append(denies, policy.Rule{Effect: "deny", Agent: agentID, App: d.App, Action: d.Action, Constraints: d.Constraints})
 	}
-	sort.SliceStable(caps, func(i, j int) bool {
-		if caps[i].App != caps[j].App {
-			return caps[i].App < caps[j].App
-		}
-		if caps[i].Action != caps[j].Action {
-			return caps[i].Action < caps[j].Action
-		}
-		return caps[i].Command < caps[j].Command
-	})
 
 	if flags["json"] == "true" {
 		return writeJSON(map[string]any{
@@ -428,91 +411,6 @@ func runCapabilities(paths config.Paths, args []string) int {
 	}
 	printCapabilities(agentID, caps, denies)
 	return daemon.ExitOK
-}
-
-func buildCapability(agentID string, r policy.Rule, defs map[string]appdef.Definition, targets admin.SSHTargets) capability {
-	c := capability{App: r.App, Action: r.Action}
-	base := fmt.Sprintf("openscope %s %s --agent %s", r.App, r.Action, agentID)
-
-	def, ok := defs[r.App]
-	if !ok {
-		c.Command, c.Note = base, "no such app in the current definitions — this allow rule is inert"
-		return c
-	}
-	action, ok := def.Action(r.Action)
-	if !ok {
-		c.Command, c.Note = base, "no such action for this app — this allow rule is inert"
-		return c
-	}
-	c.Description = action.Description
-
-	// The ssh target this rule is scoped to (if any), for value hints.
-	var tgt admin.SSHTarget
-	var haveTgt bool
-	if alias := r.Constraints["target"]; alias != "" {
-		tgt, haveTgt = admin.FindSSHTarget(targets, alias)
-	}
-
-	var sb strings.Builder
-	sb.WriteString(base)
-	for _, p := range action.Parameters {
-		key := p.PolicyKey
-		if key == "" {
-			key = p.Name
-		}
-		cp := capParam{Flag: "--" + p.Name, Type: p.Type, Required: p.Required}
-		if fixed, pinned := r.Constraints[key]; pinned {
-			cp.Fixed = fixed
-			fmt.Fprintf(&sb, " --%s %s", p.Name, fixed)
-		} else {
-			if p.Required {
-				fmt.Fprintf(&sb, " --%s <%s>", p.Name, p.Name)
-			} else {
-				fmt.Fprintf(&sb, " [--%s <%s>]", p.Name, p.Name)
-			}
-			cp.Hint = paramHint(r.App, p, haveTgt, tgt, targets)
-		}
-		c.Params = append(c.Params, cp)
-	}
-	c.Command = sb.String()
-	return c
-}
-
-// paramHint suggests valid values for a FREE parameter, sourced from the ssh
-// target's allow-lists (or the configured target list), so the agent can fill
-// the command in without guessing — and so the hint tracks config, not a doc.
-func paramHint(app string, p appdef.Parameter, haveTgt bool, tgt admin.SSHTarget, targets admin.SSHTargets) string {
-	key := p.PolicyKey
-	if key == "" {
-		key = p.Name
-	}
-	switch {
-	case app == "ssh" && key == "target":
-		var aliases []string
-		for _, t := range targets.Targets {
-			aliases = append(aliases, t.Alias)
-		}
-		if len(aliases) > 0 {
-			return "one of: " + strings.Join(aliases, ", ")
-		}
-	case app == "ssh" && (p.Constraint == "service" || key == "service"):
-		if haveTgt && len(tgt.AllowedServices) > 0 {
-			return "allowed services: " + strings.Join(tgt.AllowedServices, ", ")
-		}
-		return "must be one of the target's allowed_services"
-	case app == "ssh" && (p.Constraint == "path" || key == "path"):
-		if haveTgt {
-			scopes := append([]string{}, tgt.AllowedPaths...)
-			for _, pre := range tgt.AllowedPathPrefixes {
-				scopes = append(scopes, pre+"/*")
-			}
-			if len(scopes) > 0 {
-				return "under: " + strings.Join(scopes, ", ")
-			}
-		}
-		return "must satisfy the target's allowed_paths/allowed_path_prefixes"
-	}
-	return ""
 }
 
 func denyViews(denies []policy.Rule) []map[string]any {
@@ -1479,43 +1377,14 @@ func loadVisibleDefinitions(paths config.Paths) (map[string]loadedApp, error) {
 	return applyEnabledState(defs, enabled), nil
 }
 
+// loadAllDefinitions and loadBundledDefinitions delegate to the capabilities
+// package, the single home for definition assembly shared with openscope-mcp.
 func loadAllDefinitions(paths config.Paths) (map[string]appdef.Definition, error) {
-	bundled, err := loadBundledDefinitions()
-	if err != nil {
-		return nil, err
-	}
-	// Mirrors daemon.loadAllDefinitions: bundled → apps.d → root applied
-	// registry, with command-template apps.d verbs dropped under SystemMode so
-	// the plan's view matches what the daemon will actually execute.
-	return appdef.AssembleDefinitions(bundled, paths.AppsDir, paths.AppDefinitionsFile, config.SystemMode())
+	return capabilities.LoadAllDefinitions(paths)
 }
 
 func loadBundledDefinitions() ([]appdef.Definition, error) {
-	entries, err := resources.FS.ReadDir("bundled/apps")
-	if err != nil {
-		return nil, fmt.Errorf("read bundled app definitions: %w", err)
-	}
-
-	defs := make([]appdef.Definition, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		path := "bundled/apps/" + entry.Name()
-		data, err := resources.FS.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read bundled app definition %s: %w", path, err)
-		}
-		def, err := appdef.Parse(data, path)
-		if err != nil {
-			return nil, err
-		}
-		def.Bundled = true
-		def.ManifestPath = path
-		defs = append(defs, def)
-	}
-
-	return defs, nil
+	return capabilities.LoadBundledDefinitions()
 }
 
 func setAppEnabled(paths config.Paths, appName string, enabled bool) int {
