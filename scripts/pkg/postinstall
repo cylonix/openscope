@@ -23,6 +23,8 @@ SESSION_LABEL="com.ezblock.openscope.session"
 
 CLI_SRC="$BIN_DIR/openscope"
 CLI_LINK="/usr/local/bin/openscope"
+MCP_SRC="$BIN_DIR/openscope-mcp"
+MCP_LINK="/usr/local/bin/openscope-mcp"
 PILOT_SRC_DIR="/usr/local/lib/openscope/pilot"
 PILOT_LINK="/usr/local/bin/openscope-diag"
 
@@ -53,6 +55,10 @@ echo "postinstall: setting up OpenScope (two-daemon) for $CONSOLE_USER (uid $CON
 mkdir -p /usr/local/bin
 ln -sf "$CLI_SRC" "$CLI_LINK"
 echo "postinstall: $CLI_LINK -> $CLI_SRC"
+if [ -f "$MCP_SRC" ]; then
+  ln -sf "$MCP_SRC" "$MCP_LINK"
+  echo "postinstall: $MCP_LINK -> $MCP_SRC"
+fi
 if [ -f "$PILOT_SRC_DIR/pilot_test.sh" ]; then
   ln -sf "$PILOT_SRC_DIR/pilot_test.sh" "$PILOT_LINK"
 fi
