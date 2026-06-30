@@ -1,14 +1,18 @@
 # OpenScope plugin for Claude Code
 
 Govern Claude Code with the [OpenScope](https://open-scope.org) action broker in
-one install. The plugin bundles the two pieces that *teach and enforce*:
+one install. The plugin bundles the pieces that *offer, teach, and enforce*:
 
 | Component | What it does |
 |---|---|
-| **`openscope` skill** (`skills/openscope/SKILL.md`) | Teaches the agent one rule: for privileged or production access, route through `openscope --agent <id>`, and run `openscope capabilities` to discover the live, policy-driven action surface before calling. It does **not** hardcode the action list (that drifts when policy changes). |
+| **MCP server** (`mcpServers.openscope` → `openscope-mcp`) | Exposes the agent's currently-allowed broker verbs as native, schema-typed MCP tools (`mcp__plugin_openscope_openscope__*`). The tool list is the live, policy-filtered surface and updates automatically (via `tools/list_changed`) when `sudo openscope apply` adds a verb — no flag-string assembly, no teaching. Requires the `openscope-mcp` binary on PATH (installed by the OpenScope PKG). |
+| **`openscope` skill** (`skills/openscope/SKILL.md`) | Teaches the CLI fallback and the contract: for privileged or production access route through `openscope --agent <id>`, and treat a policy denial as final. |
 | **Guard hook** (`hooks/hooks.json` → `scripts/openscope-guard.sh`) | A `PreToolUse` net. Denies raw `ssh`/`scp`/`sftp`/`rsync` to governed hosts, raw `sudo`, and direct `Write`/`Edit` of broker config under `~/.openscope` or the admin dir, telling the agent which `openscope` action to use instead. |
 
-The skill teaches, the broker is the authority, the hook is the net.
+The MCP server offers the sanctioned path as first-class tools, the skill
+teaches, the broker is the authority, and the hook is the net. The MCP server is
+*additive* — it holds no keys and no policy authority; the guard hook and the
+broker's key custody remain what make the broker the only path.
 
 ## Install
 
@@ -24,17 +28,24 @@ hook registers itself; **no manual hook wiring or `CLAUDE.md` snippet is needed.
 ## One manual step the plugin cannot do for you
 
 Claude Code **plugins cannot grant permissions** — only the user's own settings
-can. So that the agent isn't prompted to approve every brokered call, add this
-allow rule to `~/.claude/settings.json` (user level) or `.claude/settings.json`
+can. So that the agent isn't prompted to approve every brokered call, add these
+allow rules to `~/.claude/settings.json` (user level) or `.claude/settings.json`
 (project level):
 
 ```json
 {
   "permissions": {
-    "allow": ["Bash(openscope:*)"]
+    "allow": [
+      "mcp__plugin_openscope_openscope__*",
+      "Bash(openscope:*)"
+    ]
   }
 }
 ```
+
+The first rule covers every current and future MCP tool the broker exposes (so a
+verb added later by `sudo openscope apply` needs no re-approval); the second
+covers the `openscope` CLI fallback.
 
 ## Runtime prerequisites (the broker itself)
 

@@ -88,4 +88,26 @@ If no scoped action covers this, ask the user to run the command themselves.
 Exit code 3 means denied by policy — report it to the user, do not work around it."
 fi
 
+# --- Rule 4: raw AWS SSM execution -------------------------------------------
+# send-command / start-session are the agentic execution surface — broker them.
+# SSM Parameter Store reads (aws ssm get-parameter) are not execution and pass.
+# Defense-in-depth only: the real boundary is the IAM deny on the agent identity
+# (see deploy/broker/iam), since this can't intercept the AWS SDK / boto3.
+if printf '%s' "$command" | grep -qE '(^|[;&|[:space:]])aws([[:space:]]|$)' \
+   && printf '%s' "$command" | grep -qE '[[:space:]]ssm([[:space:]]|$)' \
+   && printf '%s' "$command" | grep -qE '(send-command|start-session)'; then
+  deny "Raw AWS SSM execution is brokered by OpenScope. Use the scoped actions instead (agent id: $AGENT_ID), e.g.:
+  openscope ssm check_host --agent $AGENT_ID --target <alias>
+  openscope ssm tail_logs --agent $AGENT_ID --target <alias> --service <svc>
+  openscope ssm read_file --agent $AGENT_ID --target <alias> --path <abs-path>
+The broker runs SSM with its own least-privilege AWS identity; the agent's identity must be denied ssm:SendCommand/StartSession in IAM.
+Exit code 3 means denied by policy — report it to the user, do not work around it."
+fi
+
+# ssh/scp/sftp/rsync tunneled to an EC2 instance id over SSM (ProxyCommand) — also brokered.
+if printf '%s' "$command" | grep -qE '(^|[;&|[:space:]])(ssh|scp|sftp|rsync)([[:space:]]|$)' \
+   && printf '%s' "$command" | grep -qE '(^|[@[:space:]])(i|mi)-[0-9a-f]{8,}'; then
+  deny "Raw SSH/SCP to an EC2 instance id (SSM tunnel) is brokered by OpenScope. Use 'openscope ssm ...' (agent id: $AGENT_ID), e.g. openscope ssm check_host --agent $AGENT_ID --target <alias>."
+fi
+
 exit 0

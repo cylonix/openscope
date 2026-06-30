@@ -11,5 +11,10 @@
   "homepage": "https://open-scope.org/docs/coding-agents",
   "repository": "https://github.com/cylonix/openscope",
   "license": "BSD-3-Clause",
-  "keywords": ["openscope", "broker", "ssh", "sudo", "privileged", "audit", "governance"]
+  "keywords": ["openscope", "broker", "ssh", "sudo", "privileged", "audit", "governance", "mcp"],
+  "mcpServers": {
+    "openscope": {
+      "command": "openscope-mcp"
+    }
+  }
 }
