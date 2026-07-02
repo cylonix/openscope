@@ -6,6 +6,7 @@ package admin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openscope/openscope/config"
@@ -309,9 +310,31 @@ func TestRequireSudoSafeRejectsGroupWritable(t *testing.T) {
 
 func TestRequireSudoSafeAcceptsRootOwnedBinary(t *testing.T) {
 	// /usr/bin/true is root-owned and not user-writable on all macOS/Linux.
+	// Regression guard: the old check compared the owner against the CURRENT
+	// uid, so a root daemon rejected every root-owned system binary (0 == 0)
+	// — no privileged custom verb could ever run under the shipped root
+	// openscoped. Root-owned must pass no matter who runs the check.
 	err := RequireSudoSafe("/usr/bin/true")
 	if err != nil {
 		t.Fatalf("expected root-owned system binary to pass: %v", err)
+	}
+}
+
+func TestRequireSudoSafeRejectsNonRootOwnedBinary(t *testing.T) {
+	// The inverse blind spot of the old owner==Getuid() check: under a root
+	// daemon, a 0755 binary owned by any other user passed and would run as
+	// root. The rule is root ownership, independent of the checking uid.
+	script := filepath.Join(t.TempDir(), "user_owned.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	err := RequireSudoSafe(script)
+	if err == nil {
+		t.Fatal("expected a non-root-owned binary to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not root") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

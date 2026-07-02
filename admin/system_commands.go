@@ -450,9 +450,13 @@ func PkgScopeConfigured(cmds SystemCommands) bool {
 	return len(cmds.Pkg.AllowedPrefixes) > 0 || cmds.Pkg.RequireRootOwned || len(cmds.Pkg.AllowedTeamIDs) > 0
 }
 
-// RequireSudoSafe rejects binaries that are writable by the current user.
-// A user-writable binary with sudo is a privilege escalation path: an agent
-// can modify the script, then execute it through OpenScope with root.
+// RequireSudoSafe rejects binaries that anyone but root could modify. A
+// tamperable binary executed with privilege is an escalation path: an agent
+// can swap the program between review and execution, then run it through
+// OpenScope as root. Root ownership is the rule that holds regardless of
+// which uid the daemon runs as — a root daemon must accept root-owned system
+// binaries (e.g. /bin/launchctl) and refuse binaries owned by any non-root
+// user, including its own former "owner == current uid" blind spot.
 func RequireSudoSafe(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -465,10 +469,11 @@ func RequireSudoSafe(path string) error {
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("sudo binary %q is writable by group or other (mode %o)", path, info.Mode().Perm())
 	}
-	// If the file is owned by the current user, they can modify it.
-	stat := fileOwnerUID(info)
-	if stat >= 0 && stat == os.Getuid() {
-		return fmt.Errorf("sudo binary %q is owned by the current user — an agent could modify it before execution", path)
+	switch uid := fileOwnerUID(info); {
+	case uid < 0:
+		return fmt.Errorf("sudo binary %q: cannot determine the file owner", path)
+	case uid != 0:
+		return fmt.Errorf("sudo binary %q is owned by uid %d, not root — its owner could modify it before privileged execution", path, uid)
 	}
 	return nil
 }
