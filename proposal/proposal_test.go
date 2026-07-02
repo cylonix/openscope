@@ -4,6 +4,7 @@
 package proposal
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,63 @@ func TestParseRejectsBadRule(t *testing.T) {
 	src := "version: 1\nkind: openscope-proposal\npolicy:\n  add:\n    - {effect: maybe, agent: a, app: b, action: c}\n"
 	if _, err := Parse([]byte(src), "x"); err == nil {
 		t.Error("expected effect validation error")
+	}
+}
+
+func TestParseRejectsUnknownField(t *testing.T) {
+	// The failure this guards: under a lenient parser a misspelled key
+	// (`allow` for `allowed`) was silently dropped, so the plan showed the
+	// grant as empty ("0 svcs") and applied clean while granting nothing.
+	src := `
+version: 1
+kind: openscope-proposal
+system_commands:
+  services:
+    allow:
+      add: [io.cylonix.sase.direct.daemon]
+`
+	_, err := Parse([]byte(src), "x")
+	if err == nil {
+		t.Fatal("expected an unknown-field parse error")
+	}
+	if !strings.Contains(err.Error(), "allow") {
+		t.Errorf("error should name the offending key, got %v", err)
+	}
+}
+
+func TestParseRejectsEmptyFile(t *testing.T) {
+	if _, err := Parse(nil, "x"); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("expected empty-file error, got %v", err)
+	}
+}
+
+// TestShippedProposalsParseStrict guards the shipped grant proposals against
+// schema drift: Parse rejects unknown fields, so a schema key rename (or a
+// typo in a shipped file) fails here instead of silently no-oping at a
+// user's `openscope plan`.
+func TestShippedProposalsParseStrict(t *testing.T) {
+	var files []string
+	for _, root := range []string{"../dist", "../docs"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".proposal.yaml") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("no shipped *.proposal.yaml found — wrong working directory?")
+	}
+	for _, f := range files {
+		if _, err := Load(f); err != nil {
+			t.Errorf("%s: %v", f, err)
+		}
 	}
 }
 

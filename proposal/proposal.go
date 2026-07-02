@@ -10,9 +10,12 @@
 package proposal
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -190,8 +193,20 @@ func Load(path string) (Proposal, error) {
 
 func Parse(data []byte, source string) (Proposal, error) {
 	var p Proposal
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return Proposal{}, fmt.Errorf("parse proposal: %w", err)
+	// Strict decoding: an unknown key is almost always a misspelled or
+	// misplaced grant, and lenient parsing turns it into a proposal that
+	// plans clean while granting nothing (e.g. services under the wrong
+	// nesting showing "0 svcs"). Fail loudly with the offending line instead.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Proposal{}, fmt.Errorf("parse proposal: file is empty")
+		}
+		return Proposal{}, fmt.Errorf("parse proposal (unknown field = misspelled or misplaced key; compare a shipped dist/*.proposal.yaml): %w", err)
+	}
+	if err := dec.Decode(new(struct{})); !errors.Is(err, io.EOF) {
+		return Proposal{}, fmt.Errorf("parse proposal: expected a single YAML document")
 	}
 	sum := sha256.Sum256(data)
 	p.SHA256 = hex.EncodeToString(sum[:])
