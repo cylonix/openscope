@@ -334,7 +334,8 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 // handleInspectBypass performs the read-only SSH parallel-path verification on behalf
 // of `plan`/`check-bypass`: it reads the target's authorized_keys with the broker key
 // (which the daemon holds as root) and compares against the caller-supplied key
-// fingerprints, returning only the per-key verdict. The authorized_keys content never
+// fingerprints, returning only the verdicts — per key, except a broker-key rejection,
+// which is a single target-level result (Key empty). The authorized_keys content never
 // leaves the daemon. The caller passes the target details (plan's new targets aren't in
 // the config yet); the daemon only connects with an identity file under the root-owned
 // broker key dir, so a caller can't make it authenticate with an arbitrary key.
@@ -360,10 +361,13 @@ func (s Service) handleInspectBypass(request ipc.Request) ipc.Response {
 	}
 
 	results := sshexec.InspectBypass(admin.NormalizeSSHTarget(target), keys, nil)
-	found := 0
+	found, rejected := 0, 0
 	for _, r := range results {
-		if r.Outcome == sshexec.BypassFound {
+		switch r.Outcome {
+		case sshexec.BypassFound:
 			found++
+		case sshexec.BypassBrokerKeyRejected:
+			rejected++
 		}
 	}
 	s.recordAudit(audit.Event{
@@ -373,7 +377,7 @@ func (s Service) handleInspectBypass(request ipc.Request) ipc.Response {
 		Action:    "inspect_bypass",
 		Params:    map[string]string{"target": target.Alias, "host": target.Host},
 		Decision:  "allow",
-		Result:    fmt.Sprintf("inspected (%d key(s), %d bypass)", len(results), found),
+		Result:    fmt.Sprintf("inspected (%d key(s), %d bypass, %d broker-rejected)", len(keys), found, rejected),
 	})
 	return ipc.Response{OK: true, App: "ssh", Action: "inspect_bypass", Agent: request.Agent, Data: results, ExitCode: ExitOK}
 }

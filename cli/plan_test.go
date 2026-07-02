@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openscope/openscope/admin"
@@ -105,6 +106,28 @@ func TestRunLiveBypassFoldsVerdictIntoPlan(t *testing.T) {
 	runLiveBypass(paths, &plan)
 	if !plan.Blocked {
 		t.Fatalf("expected plan BLOCKED when the broker read is inconclusive (fail closed)")
+	}
+
+	// The target rejects the BROKER's key (e.g. it was never installed there) →
+	// blocked, and the finding must say the broker key is broken — not the
+	// misleading "your ~/.ssh keys could not be confirmed absent".
+	parallelPathRunner = bypassStub{result: executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if !plan.Blocked {
+		t.Fatalf("expected plan BLOCKED when the target rejects the broker key")
+	}
+	var summary string
+	for _, f := range plan.Findings {
+		if f.RuleID == "SSH-BYPASS" {
+			summary = f.Summary
+		}
+	}
+	if !strings.Contains(summary, "broker key was REJECTED") {
+		t.Errorf("finding must report the broker-key rejection, got %q", summary)
+	}
+	if strings.Contains(summary, "could not be confirmed absent") {
+		t.Errorf("broker-key rejection must not be reported as an unverifiable bypass: %q", summary)
 	}
 }
 
@@ -340,5 +363,16 @@ func TestRunLiveBypassViaDaemon(t *testing.T) {
 	runLiveBypass(paths, &plan)
 	if plan.Blocked {
 		t.Fatal("deferred (daemon down, broker key root-only) must not block at plan time")
+	}
+
+	// An outcome string this CLI doesn't know (a newer daemon) must fail closed
+	// as unknown, never fall through to the SSH-NO-BYPASS pass.
+	inspectBypassViaDaemon = func(_ config.Paths, _ string, target admin.SSHTarget, _ []sshexec.UserKey) ([]sshexec.BypassResult, bool) {
+		return []sshexec.BypassResult{{Target: target.Alias, Host: target.Host, Outcome: "verdict_from_the_future"}}, true
+	}
+	plan = bypassPlan(t, home)
+	runLiveBypass(paths, &plan)
+	if !plan.Blocked {
+		t.Fatal("an unrecognized outcome must fail closed and block the plan")
 	}
 }

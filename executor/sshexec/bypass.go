@@ -21,6 +21,13 @@ const (
 	BypassFound   = "bypass"       // a user key authenticated to the target
 	BypassClear   = "clear"        // auth refused — no parallel path via this key
 	BypassUnknown = "inconclusive" // host unreachable / other error — undetermined
+
+	// BypassBrokerKeyRejected: the BROKER's own key failed to authenticate, so the
+	// inspection never got to look at authorized_keys. This is a different problem
+	// than an inconclusive bypass check — the brokered connection itself is broken
+	// (public key not installed on the target, wrong user, wrong key) — and callers
+	// must report it as such, not as "could not verify the bypass".
+	BypassBrokerKeyRejected = "broker_key_rejected"
 )
 
 // BypassResult is one (target, identity) probe outcome.
@@ -114,12 +121,19 @@ func classifyBypass(target admin.SSHTarget, key string, res executor.Result, err
 		r.Outcome, r.Detail = BypassUnknown, err.Error()
 	case res.ExitCode == 0:
 		r.Outcome = BypassFound
-	case strings.Contains(res.Stderr, "Permission denied") || strings.Contains(res.Stderr, "publickey"):
+	case mentionsAuthDenial(res.Stderr):
 		r.Outcome = BypassClear
 	default:
 		r.Outcome, r.Detail = BypassUnknown, firstLine(res.Stderr)
 	}
 	return r
+}
+
+// mentionsAuthDenial is the publickey-rejection signature every classifier in
+// this file keys on — one site, so the probe and the broker-key read can't
+// drift apart on what counts as "auth was attempted and refused".
+func mentionsAuthDenial(s string) bool {
+	return strings.Contains(s, "Permission denied") || strings.Contains(s, "publickey")
 }
 
 func firstLine(s string) string {
@@ -171,8 +185,10 @@ func WithinBrokerKeyDir(path string) bool {
 // raw authorized_keys + sshd_config dump (the read-only authKeysReadCmd output). It
 // is the PRIVILEGED half of the bypass inspection and must run where the broker key
 // is readable: the root daemon (via the inspect_bypass built-in), or apply-as-root.
-// ok=false with a one-line detail when the connection or read fails.
-func ReadAuthorizedKeys(target admin.SSHTarget, run CommandRunner) (dump string, ok bool, detail string) {
+// ok=false with a one-line detail when the connection or read fails; authRejected
+// distinguishes "the target refused the broker key" (the target is not brokerable
+// as configured) from unreachable/other failures.
+func ReadAuthorizedKeys(target admin.SSHTarget, run CommandRunner) (dump string, ok, authRejected bool, detail string) {
 	if run == nil {
 		run = execRunner{}
 	}
@@ -198,14 +214,44 @@ func ReadAuthorizedKeys(target admin.SSHTarget, run CommandRunner) (dump string,
 	args = append(args, target.User+"@"+target.Host, authKeysReadCmd)
 
 	res, err := run.Run("ssh", args, nil)
-	if err != nil || res.ExitCode != 0 {
-		d := strings.TrimSpace(res.Stderr)
-		if err != nil {
-			d = err.Error()
-		}
-		return "", false, firstLine(d)
+	if err != nil {
+		return "", false, false, firstLine(err.Error())
 	}
-	return res.Stdout, true, ""
+	if res.ExitCode != 0 {
+		// Only ssh itself exits 255; any other code came from the remote command
+		// AFTER a successful login, so whatever its output mentions (a banner, a
+		// forced-command wrapper printing "Permission denied") it cannot be a
+		// broker-key rejection.
+		if res.ExitCode == 255 {
+			if line, denied := authDenialLine(res.Stderr); denied {
+				return "", false, true, line
+			}
+		}
+		return "", false, false, firstLine(strings.TrimSpace(res.Stderr))
+	}
+	return res.Stdout, true, false, ""
+}
+
+// authDenialLine reports whether a failed ssh connection's stderr carries a
+// publickey rejection of the offered key, returning the denial line itself
+// ("user@host: Permission denied (publickey)."). Local key-file problems
+// disqualify: when the identity file is missing, unreadable, or unusable
+// ("Load key ..." covers bad permissions, invalid format, passphrase and
+// libcrypto failures), ssh warns and then collects a denial for the keys it
+// DIDN'T offer — blaming the target for that would send the operator to fix
+// the wrong end. The LAST matching line wins because ssh prints the final
+// denial after any warnings.
+func authDenialLine(stderr string) (line string, denied bool) {
+	if strings.Contains(stderr, "not accessible") || strings.Contains(stderr, "No such file") ||
+		strings.Contains(stderr, "Load key") || strings.Contains(stderr, "UNPROTECTED PRIVATE KEY") {
+		return "", false
+	}
+	for _, l := range strings.Split(stderr, "\n") {
+		if mentionsAuthDenial(l) {
+			line = strings.TrimSpace(l)
+		}
+	}
+	return line, line != ""
 }
 
 // UserKey pairs a personal key's display path with its SHA256 public-key fingerprint.
@@ -236,13 +282,23 @@ func LocalUserKeys(privKeyPaths []string) []UserKey {
 //   - fingerprint present in authorized_keys           -> BypassFound
 //   - absent, no CA/command/relocated key file          -> BypassClear
 //   - absent, but such alternate auth IS configured     -> BypassUnknown
-//   - broker key won't connect / read fails             -> BypassUnknown
+//   - the target REJECTED the broker key itself         -> BypassBrokerKeyRejected
+//     (ONE result for the whole target, Key empty — the rejection says nothing
+//     about any particular ~/.ssh key)
+//   - broker key won't connect / other read failure     -> BypassUnknown
 //
 // Runs in the daemon (root, holds the broker key) for plan/check-bypass, and locally
 // for apply-as-root. nil run selects the default os/exec runner.
 func InspectBypass(target admin.SSHTarget, keys []UserKey, run CommandRunner) []BypassResult {
-	dump, ok, detail := ReadAuthorizedKeys(target, run)
+	dump, ok, authRejected, detail := ReadAuthorizedKeys(target, run)
 	if !ok {
+		if authRejected {
+			detail = "the target rejected the broker key (" + detail + ")"
+			if target.ProxyJump != "" {
+				detail += "; the rejection may also come from the jump host " + target.ProxyJump
+			}
+			return []BypassResult{{Target: target.Alias, Host: target.Host, Outcome: BypassBrokerKeyRejected, Detail: detail}}
+		}
 		detail = "could not read authorized_keys via the broker key: " + detail
 		out := make([]BypassResult, 0, len(keys))
 		for _, k := range keys {

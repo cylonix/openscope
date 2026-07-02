@@ -186,8 +186,35 @@ func TestInspectAuthorizedKeys(t *testing.T) {
 			wantSub: "CA/command-based auth",
 		},
 		{
-			name:    "broker key cannot connect is inconclusive",
-			res:     executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."},
+			// The target refusing the BROKER's key is not an inconclusive bypass
+			// check — it means the brokered connection itself is broken, and must
+			// be reported as such (not as "cannot verify the agent's ~/.ssh keys").
+			name:    "broker key rejected by the target is its own failure",
+			res:     executor.Result{ExitCode: 255, Stderr: "Warning: Permanently added 'p.example.com' (ED25519) to the list of known hosts.\nPermission denied (publickey)."},
+			want:    BypassBrokerKeyRejected,
+			wantSub: "the target rejected the broker key (Permission denied (publickey).)",
+		},
+		{
+			name:    "host unreachable is inconclusive",
+			res:     executor.Result{ExitCode: 255, Stderr: "ssh: connect to host p.example.com port 22: Operation timed out"},
+			want:    BypassUnknown,
+			wantSub: "could not read authorized_keys",
+		},
+		{
+			// Exit 1 came from the remote command AFTER a successful login (e.g. a
+			// forced-command wrapper printing "Permission denied") — the broker key
+			// authenticated, so this must NOT be classified as a key rejection.
+			name:    "remote command failure mentioning denial is inconclusive",
+			res:     executor.Result{ExitCode: 1, Stderr: "wrapper: Permission denied"},
+			want:    BypassUnknown,
+			wantSub: "could not read authorized_keys",
+		},
+		{
+			// A local key-file problem means ssh never offered the broker key; the
+			// trailing denial is for the keys it DIDN'T have, not the target's
+			// verdict on the broker key.
+			name:    "local key problem is inconclusive, not a target rejection",
+			res:     executor.Result{ExitCode: 255, Stderr: "Load key \"/var/openscope/ssh/prod/id_rsa\": bad permissions\nroot@p.example.com: Permission denied (publickey)."},
 			want:    BypassUnknown,
 			wantSub: "could not read authorized_keys",
 		},
@@ -204,6 +231,12 @@ func TestInspectAuthorizedKeys(t *testing.T) {
 			}
 			if c.wantSub != "" && !strings.Contains(out[0].Detail, c.wantSub) {
 				t.Errorf("detail %q missing %q", out[0].Detail, c.wantSub)
+			}
+			// A broker-key rejection is target-level: exactly one result, no
+			// personal key attached (a per-key fan-out would read as "your key
+			// was rejected" in every consumer).
+			if c.want == BypassBrokerKeyRejected && out[0].Key != "" {
+				t.Errorf("broker-key rejection must not name a personal key, got %q", out[0].Key)
 			}
 		})
 	}
@@ -263,7 +296,8 @@ func TestInspectBypassFingerprints(t *testing.T) {
 		{"absent is clear", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "")}, mineFP, BypassClear},
 		{"absent + CA trust is inconclusive", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "TrustedUserCAKeys /etc/ssh/ca.pub")}, mineFP, BypassUnknown},
 		{"empty fingerprint is inconclusive", executor.Result{ExitCode: 0, Stdout: dump(otherLine, "")}, "", BypassUnknown},
-		{"read failure is inconclusive", executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}, mineFP, BypassUnknown},
+		{"broker key rejected is its own failure", executor.Result{ExitCode: 255, Stderr: "Permission denied (publickey)."}, mineFP, BypassBrokerKeyRejected},
+		{"unreachable is inconclusive", executor.Result{ExitCode: 255, Stderr: "ssh: connect to host p.example.com port 22: Connection refused"}, mineFP, BypassUnknown},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

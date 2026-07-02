@@ -744,30 +744,47 @@ func runSSHCheckBypass(paths config.Paths, args []string) int {
 		results = append(results, r...)
 	}
 
-	bypassed := 0
-	for _, r := range results {
-		if r.Outcome == sshexec.BypassFound {
-			bypassed++
-		}
-	}
+	bypassed, rejected, inconclusive := countBypassOutcomes(results)
 
 	if flags["json"] == "true" {
 		if code := writeJSON(map[string]any{
-			"checked_targets": probed,
-			"user_keys":       keys,
-			"results":         results,
-			"bypass_found":    bypassed,
-			"mode":            bypassMode(liveAuth),
+			"checked_targets":     probed,
+			"user_keys":           keys,
+			"results":             results,
+			"bypass_found":        bypassed,
+			"broker_key_rejected": rejected,
+			"inconclusive":        inconclusive,
+			"mode":                bypassMode(liveAuth),
 		}); code != daemon.ExitOK {
 			return code
 		}
 	} else {
-		printBypassReport(keys, results, bypassed, probed, liveAuth)
+		printBypassReport(keys, results, probed, liveAuth)
 	}
 	if bypassed > 0 {
 		return daemon.ExitDenied
 	}
 	return daemon.ExitOK
+}
+
+// countBypassOutcomes tallies results per verdict: confirmed bypasses,
+// targets that rejected the broker's own key (one result per target), and
+// pairs that could not be verified. An outcome string this CLI doesn't know
+// (a newer daemon) counts as inconclusive — never as a clean pass.
+func countBypassOutcomes(results []sshexec.BypassResult) (bypassed, rejected, inconclusive int) {
+	for _, r := range results {
+		switch r.Outcome {
+		case sshexec.BypassFound:
+			bypassed++
+		case sshexec.BypassBrokerKeyRejected:
+			rejected++
+		case sshexec.BypassClear:
+			// verified — the one outcome that doesn't count against the run
+		default:
+			inconclusive++
+		}
+	}
+	return bypassed, rejected, inconclusive
 }
 
 func bypassMode(liveAuth bool) string {
@@ -777,19 +794,21 @@ func bypassMode(liveAuth bool) string {
 	return "inspect"
 }
 
-func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, probed int, liveAuth bool) {
+func printBypassReport(keys []string, results []sshexec.BypassResult, probed int, liveAuth bool) {
 	if liveAuth {
 		fmt.Println("OpenScope ssh bypass check (--live-auth: ATTEMPTED auth with each ~/.ssh key — may trip fail2ban)")
 	} else {
 		fmt.Println("OpenScope ssh bypass check (inspected authorized_keys via the broker key — no auth attempt)")
 	}
 	fmt.Printf("  ~/.ssh keys discovered: %d   targets checked: %d\n", len(keys), probed)
-	if len(keys) == 0 {
-		fmt.Println("  no private keys in ~/.ssh — nothing to check")
-		return
-	}
+	// A key-less run can still carry target-level broker-key rejections, so only
+	// bail when there is genuinely nothing to show.
 	if len(results) == 0 {
-		fmt.Println("  no targets matched")
+		if len(keys) == 0 {
+			fmt.Println("  no private keys in ~/.ssh — nothing to check")
+		} else {
+			fmt.Println("  no targets matched")
+		}
 		return
 	}
 	fmt.Println()
@@ -800,29 +819,37 @@ func printBypassReport(keys []string, results []sshexec.BypassResult, bypassed, 
 			mark = "BYPASS"
 		case sshexec.BypassClear:
 			mark = "clear"
+		case sshexec.BypassBrokerKeyRejected:
+			mark = "KEY-REJECTED"
 		}
-		line := fmt.Sprintf("  [%-12s] %s (%s) via %s", mark, r.Target, r.Host, filepath.Base(r.Key))
+		line := fmt.Sprintf("  [%-12s] %s (%s)", mark, r.Target, r.Host)
+		if r.Key != "" { // broker-key rejection is target-level: no ~/.ssh key involved
+			line += " via " + filepath.Base(r.Key)
+		}
 		if r.Detail != "" {
 			line += " — " + r.Detail
 		}
 		fmt.Println(line)
 	}
-	inconclusive := 0
-	for _, r := range results {
-		if r.Outcome == sshexec.BypassUnknown {
-			inconclusive++
-		}
-	}
+	bypassed, rejected, inconclusive := countBypassOutcomes(results)
+	// Each failure class gets its own verdict block — a broker-key rejection on
+	// one target must not hide another target's bypass or unverified state.
 	fmt.Println()
 	if bypassed > 0 {
 		fmt.Printf("ERROR: %d user-key/host pair(s) reach the host directly — the broker is bypassable.\n", bypassed)
 		fmt.Println("Remove that key from the host's authorized_keys (or stop brokering the host); brokered access must use a root-owned key only.")
-	} else if inconclusive > 0 {
+	}
+	if rejected > 0 {
+		fmt.Printf("BROKER KEY REJECTED: %d target(s) refused the broker's own key — brokered access to them does not work.\n", rejected)
+		fmt.Println("Install the broker's public key in the target user's authorized_keys (or fix the target's user/identity_file); the bypass check reads authorized_keys over that key, so it cannot verify the boundary until the key authenticates.")
+	}
+	if inconclusive > 0 {
 		fmt.Printf("INCONCLUSIVE: %d pair(s) could not be verified.\n", inconclusive)
 		if !liveAuth {
 			fmt.Println("Inspection reads the target's authorized_keys via the broker's root-owned key; run this as root (or where that key is readable) so it can connect, or pass --live-auth to attempt a real auth (which can trip fail2ban).")
 		}
-	} else {
+	}
+	if bypassed == 0 && rejected == 0 && inconclusive == 0 {
 		fmt.Println("OK: no ~/.ssh key is authorized on a brokered host.")
 	}
 }

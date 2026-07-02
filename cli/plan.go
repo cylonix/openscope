@@ -52,7 +52,8 @@ var brokerKeyReadable = func(path string) bool {
 
 // inspectBypassViaDaemon asks the daemon (root, holds the broker key) to read the
 // target's authorized_keys and compare against keys' fingerprints, returning the
-// per-key verdict. The authorized_keys content never leaves the daemon. reached=false
+// verdicts (per key; a broker-key rejection is one target-level result with Key
+// empty). The authorized_keys content never leaves the daemon. reached=false
 // means the daemon is unreachable, so the caller can fall back to a local read or
 // defer. Overridable in tests.
 var inspectBypassViaDaemon = func(paths config.Paths, agentID string, target admin.SSHTarget, keys []sshexec.UserKey) (results []sshexec.BypassResult, reached bool) {
@@ -105,11 +106,12 @@ func localOperator() string {
 // invoking user's ~/.ssh keys can reach the proposal's new SSH targets directly (which
 // would bypass the broker). It asks the daemon (root, holds the broker key) to read
 // each target's authorized_keys and compare against the user's key fingerprints, then
-// folds the verdict into the plan via ApplyBypassResults: a present key or an
-// inconclusive read → blocking SSH-BYPASS (fail closed), all-absent → SSH-NO-BYPASS
-// pass. No sudo needed. If the daemon is unreachable it falls back to a local read where
-// the broker key is readable (apply-as-root), else defers (the static SSH-PARALLEL-PATH
-// finding stands). No-op without new targets or ~/.ssh keys. --skip-bypass-check skips it.
+// folds the verdict into the plan via ApplyBypassResults: a present key, a target that
+// rejects the broker key, or an inconclusive read → blocking SSH-BYPASS (fail closed),
+// all-absent → SSH-NO-BYPASS pass. No sudo needed. If the daemon is unreachable it
+// falls back to a local read where the broker key is readable (apply-as-root), else
+// defers (the static SSH-PARALLEL-PATH finding stands). No-op without new targets or
+// ~/.ssh keys. --skip-bypass-check skips it.
 func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 	p := plan.Proposal
 	if len(p.SSHTargets.Add) == 0 {
@@ -121,7 +123,7 @@ func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 	}
 	keys := sshexec.LocalUserKeys(keyPaths)
 	agentID := localOperator()
-	var bypass, unknown []sshexec.BypassResult
+	var bypass, brokerRejected, unknown, deferred []sshexec.BypassResult
 	inspected := 0
 	for _, t := range p.SSHTargets.Add {
 		target := admin.NormalizeSSHTarget(t)
@@ -130,14 +132,28 @@ func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 			results, reached = sshexec.InspectBypass(target, keys, parallelPathRunner), true
 		}
 		if !reached {
-			continue // daemon down and broker key is root-only → defer this target
+			// Not inspected (daemon down and broker key unreadable here). Held
+			// separately: an all-deferred run defers gracefully below, but a
+			// PARTIALLY inspected run must fold these in as unknown so the pass
+			// verdict can't silently cover a target that was never checked.
+			deferred = append(deferred, sshexec.BypassResult{
+				Target: target.Alias, Host: target.Host, Outcome: sshexec.BypassUnknown,
+				Detail: "not inspected — daemon unreachable and the broker key is not readable here",
+			})
+			continue
 		}
 		inspected++
 		for _, r := range results {
 			switch r.Outcome {
 			case sshexec.BypassFound:
 				bypass = append(bypass, r)
-			case sshexec.BypassUnknown:
+			case sshexec.BypassBrokerKeyRejected:
+				brokerRejected = append(brokerRejected, r)
+			case sshexec.BypassClear:
+				// conclusively rejected — the one outcome that may pass
+			default:
+				// BypassUnknown and any outcome this CLI doesn't know (a newer
+				// daemon) — fail closed: an unrecognized verdict is not a pass.
 				unknown = append(unknown, r)
 			}
 		}
@@ -146,9 +162,10 @@ func runLiveBypass(paths config.Paths, plan *proposal.Plan) {
 		fmt.Fprintln(os.Stderr, "==> Parallel-path check deferred (daemon unreachable and the broker key is root-only); the static SSH-PARALLEL-PATH finding stands")
 		return
 	}
+	unknown = append(unknown, deferred...)
 	fmt.Fprintf(os.Stderr, "==> Parallel-path check: inspected %d target(s) via the daemon (broker-key read, no auth attempt), compared %d ~/.ssh key(s)\n",
 		inspected, len(keys))
-	plan.ApplyBypassResults(bypass, unknown)
+	plan.ApplyBypassResults(bypass, brokerRejected, unknown)
 }
 
 func boundsPath(paths config.Paths) string {

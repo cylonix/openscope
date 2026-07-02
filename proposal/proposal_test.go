@@ -11,6 +11,7 @@ import (
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/executor/sshexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -775,5 +776,41 @@ system_commands:
 	}
 	if !containsInt(eff.Ports.Allowed, 9090) {
 		t.Error("port 9090 should remain")
+	}
+}
+
+// TestApplyBypassResultsRouting pins two behaviors of the live-verdict fold:
+// distinct failure classes each produce their own finding (a broker-key
+// rejection must not mask an inconclusive target), and a HIGH finding that
+// bounds no longer block still lands in Acknowledge — never a clean verdict.
+func TestApplyBypassResultsRouting(t *testing.T) {
+	rejected := []sshexec.BypassResult{{Target: "a", Host: "a.example.com", Outcome: sshexec.BypassBrokerKeyRejected}}
+	unknown := []sshexec.BypassResult{{Target: "b", Host: "b.example.com", Key: "/home/u/.ssh/id", Outcome: sshexec.BypassUnknown}}
+
+	plan := Plan{Bounds: DefaultBounds()}
+	plan.ApplyBypassResults(nil, rejected, unknown)
+	if n := len(plan.Blocking); n != 2 {
+		t.Fatalf("both failure classes must block under default bounds, got %d blocking", n)
+	}
+	var sawRejected, sawUnknown bool
+	for _, f := range plan.Findings {
+		sawRejected = sawRejected || strings.Contains(f.Summary, "broker key was REJECTED")
+		sawUnknown = sawUnknown || strings.Contains(f.Summary, "could not be confirmed absent")
+	}
+	if !sawRejected || !sawUnknown {
+		t.Errorf("each failure class needs its own finding (rejected=%v unknown=%v)", sawRejected, sawUnknown)
+	}
+
+	// Bounds widened to not block SSH-BYPASS: the HIGH finding must demand
+	// typed acknowledgment instead of yielding a clean plan.
+	relaxed := DefaultBounds()
+	relaxed.BlockingRules = nil
+	plan = Plan{Bounds: relaxed}
+	plan.ApplyBypassResults([]sshexec.BypassResult{{Target: "a", Host: "a.example.com", Key: "/home/u/.ssh/id", Outcome: sshexec.BypassFound}}, nil, nil)
+	if plan.Blocked {
+		t.Fatal("with SSH-BYPASS unblocked the plan must not hard-block")
+	}
+	if len(plan.Acknowledge) != 1 {
+		t.Fatalf("a live-confirmed bypass must require acknowledgment, got %d", len(plan.Acknowledge))
 	}
 }

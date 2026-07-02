@@ -95,43 +95,68 @@ func BuildPlan(p Proposal, live LiveState, defs map[string]appdef.Definition, b 
 
 // ApplyBypassResults folds a live parallel-path probe (run by the CLI — plan
 // can't connect on its own) into the plan, replacing the offline MEDIUM
-// SSH-PARALLEL-PATH "unverified" finding with a definitive verdict:
-//   - any key authenticated, OR any probe was inconclusive → SSH-BYPASS (HIGH,
-//     blocking per bounds). Fail closed: the check must CONFIRM rejection, not
-//     merely fail to find a bypass.
-//   - every key conclusively rejected → SSH-NO-BYPASS (PASS).
+// SSH-PARALLEL-PATH "unverified" finding with a definitive verdict. Each
+// failure class present gets its OWN finding (they have different fixes, and
+// one must not mask another when a proposal adds several targets):
+//   - a key authenticated → SSH-BYPASS: de-authorize the personal key.
+//   - the target rejected the broker's own key → SSH-BYPASS: the brokered
+//     connection is broken; install the broker key.
+//   - a probe was inconclusive → SSH-BYPASS: fail closed, rejection must be
+//     proven before access is granted.
+//   - none of the above → SSH-NO-BYPASS (PASS).
+//
+// All three failure findings share rule ID SSH-BYPASS so the existing bounds
+// blocking_rules entry keeps hard-failing apply on installs whose root-owned
+// bounds.yaml predates the finer-grained outcomes.
 //
 // It then recomputes Blocked and the bounds table. The CLI calls this only after
 // actually running the probe (targets added + ~/.ssh keys present).
-func (p *Plan) ApplyBypassResults(bypass, unknown []sshexec.BypassResult) {
+func (p *Plan) ApplyBypassResults(bypass, brokerRejected, unknown []sshexec.BypassResult) {
 	p.Findings = removeFindings(p.Findings, "SSH-PARALLEL-PATH") // had a live answer now
 
-	var f Finding
-	switch {
-	case len(bypass) > 0:
-		f = Finding{
+	var found []Finding
+	if len(bypass) > 0 {
+		found = append(found, Finding{
 			RuleID: "SSH-BYPASS", Severity: SevHigh,
 			Resource: bypassKeyList(bypass),
 			Summary:  fmt.Sprintf("%d ~/.ssh key(s) authenticate to the new target(s) — the agent can ssh directly, bypassing the broker", len(bypass)),
 			Fix:      "de-authorize these keys on the host (edit its authorized_keys) or move them out of ~/.ssh, then re-run",
-		}
-	case len(unknown) > 0:
-		f = Finding{
+		})
+	}
+	if len(brokerRejected) > 0 {
+		found = append(found, Finding{
+			RuleID: "SSH-BYPASS", Severity: SevHigh,
+			Resource: bypassTargetList(brokerRejected),
+			Summary:  fmt.Sprintf("the broker key was REJECTED by %d target(s) — the brokered connection itself does not work, so the grant would be dead on arrival and the bypass boundary cannot be verified", len(brokerRejected)),
+			Fix:      "install the broker's public key in the target user's authorized_keys (or fix the target's user/identity_file), then re-run",
+		})
+	}
+	if len(unknown) > 0 {
+		found = append(found, Finding{
 			RuleID: "SSH-BYPASS", Severity: SevHigh,
 			Resource: "unverified",
 			Summary:  fmt.Sprintf("%d key(s) could not be confirmed absent from the target(s)' authorized_keys (broker key could not read them, or CA/command-based auth is configured) — fail closed: rejection must be proven before access is granted", len(unknown)),
 			Fix:      "make the target's authorized_keys readable via the broker key and re-run, or run `openscope ssh check-bypass --live-auth` to attempt a real auth; or pass --skip-bypass-check to override deliberately",
-		}
-	default:
-		f = Finding{
+		})
+	}
+	if len(found) == 0 {
+		found = append(found, Finding{
 			RuleID: "SSH-NO-BYPASS", Severity: SevPass,
 			Resource: "~/.ssh",
 			Summary:  "no ~/.ssh key reaches the new target(s) — verified live; the broker boundary holds",
-		}
+		})
 	}
-	p.Findings = append(p.Findings, f)
-	if isBlocking(p.Bounds, f) {
-		p.Blocking = append(p.Blocking, f)
+	for _, f := range found {
+		p.Findings = append(p.Findings, f)
+		// Same routing as BuildPlan: blocking per bounds, else a HIGH finding
+		// still demands typed acknowledgment — widening bounds.yaml to unblock
+		// SSH-BYPASS must not turn a live-confirmed bypass into a clean verdict.
+		switch {
+		case isBlocking(p.Bounds, f):
+			p.Blocking = append(p.Blocking, f)
+		case f.Severity == SevHigh:
+			p.Acknowledge = append(p.Acknowledge, f)
+		}
 	}
 	p.Blocked = len(p.Blocking) > 0
 	sort.SliceStable(p.Findings, func(i, j int) bool { return p.Findings[i].Severity > p.Findings[j].Severity })
@@ -156,6 +181,27 @@ func bypassKeyList(results []sshexec.BypassResult) string {
 		if !seen[base] {
 			seen[base] = true
 			names = append(names, base)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// bypassTargetList names the affected targets — results are per (target, key)
+// pairs, but a broker-key rejection is a per-target failure, so keys are dropped
+// and targets deduped.
+func bypassTargetList(results []sshexec.BypassResult) string {
+	seen := map[string]bool{}
+	var names []string
+	for _, r := range results {
+		name := r.Target
+		if name == "" {
+			name = r.Host
+		} else if r.Host != "" {
+			name += " (" + r.Host + ")"
+		}
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
 		}
 	}
 	return strings.Join(names, ", ")
@@ -304,7 +350,7 @@ func boundsTable(b Bounds, findings []Finding) []BoundsResult {
 	// passes; an un-probed (offline) proposal with ~/.ssh keys shows "unverified".
 	switch {
 	case count("SSH-BYPASS") > 0:
-		rows = append(rows, BoundsResult{"ssh.no_parallel_path", passFail(false, b.blocks("SSH-BYPASS")), "a ~/.ssh key reaches the host (or could not be verified)"})
+		rows = append(rows, BoundsResult{"ssh.no_parallel_path", passFail(false, b.blocks("SSH-BYPASS")), "a ~/.ssh key reaches the host, the broker key was rejected, or the check was inconclusive"})
 	case count("SSH-NO-BYPASS") > 0:
 		rows = append(rows, BoundsResult{"ssh.no_parallel_path", "pass", "verified live — no ~/.ssh key reaches the target(s)"})
 	case count("SSH-PARALLEL-PATH") > 0:
