@@ -403,6 +403,37 @@ policy:
 	}
 }
 
+func TestSystemPassthroughCoversMoreRunners(t *testing.T) {
+	// Generic root runners beyond the classic shells must be flagged so they
+	// cannot slip past the unconditional SYS-SHELL-PASSTHROUGH block.
+	for _, cmd := range []string{
+		"/usr/bin/socat TCP-LISTEN:1 EXEC:sh",
+		"/bin/busybox sh",
+		"/usr/bin/tclsh {s}",
+		"/usr/bin/systemd-run {c}",
+		"/usr/bin/nsenter -t 1 -a",
+	} {
+		if systemPassthrough(cmd) == "" {
+			t.Errorf("expected %q to be flagged as a generic root runner", cmd)
+		}
+	}
+}
+
+func TestSystemSelfGovernCoversMoreWriters(t *testing.T) {
+	// File writers beyond cp/dd/tee — an extractor or editor as root can clobber
+	// AdminDir just the same.
+	for _, cmd := range []string{
+		"/usr/bin/tar -xf {a} -C /",
+		"/usr/bin/cpio -i",
+		"/usr/bin/sponge {f}",
+		"/bin/ed {f}",
+	} {
+		if systemSelfGovern(cmd) == "" {
+			t.Errorf("expected %q to be flagged as a privileged file writer", cmd)
+		}
+	}
+}
+
 func TestLintPassthroughAppUnscoped(t *testing.T) {
 	// A proposal introducing a passthrough app must be flagged: policy is
 	// evaluated with no constraint context, so constrained rules are ignored.

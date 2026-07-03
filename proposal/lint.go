@@ -33,10 +33,20 @@ var systemBundledVerbs = []string{
 // shells, interpreters, and exec-delegating wrappers. A custom sudo verb whose
 // program is any of these is a generic root runner.
 var systemDeputies = []string{
-	"sh", "bash", "zsh", "dash", "ksh", "ash", "fish",
+	// shells
+	"sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "busybox",
+	// exec-delegating wrappers: run whatever command they are handed
 	"env", "xargs", "eval", "nohup", "timeout", "nice", "stdbuf", "setsid", "script",
+	"flock", "chroot", "unshare", "nsenter", "capsh", "watch", "parallel", "rlwrap",
+	"strace", "ltrace", "time", "systemd-run", "taskset", "ionice", "chrt", "start-stop-daemon",
+	// interpreters and debuggers (execute code / .shell out)
 	"python", "python2", "python3", "perl", "ruby", "node", "deno", "bun", "php", "lua",
-	"osascript", "awk", "gawk", "sed", "find", "sudo", "doas", "ssh", "open",
+	"tclsh", "wish", "expect", "gdb", "lldb", "make", "gmake", "sqlite3",
+	"osascript", "awk", "gawk", "sed", "find",
+	// privilege / user switch and schedulers (deferred root execution)
+	"sudo", "doas", "su", "runuser", "pkexec", "at", "batch", "crontab",
+	// remote / network exec
+	"ssh", "open", "socat", "nc", "ncat", "netcat",
 }
 
 // systemWriters can clobber arbitrary files; as a privileged custom verb they can
@@ -44,6 +54,8 @@ var systemDeputies = []string{
 var systemWriters = []string{
 	"tee", "dd", "cp", "mv", "ln", "install", "rsync", "chmod", "chown", "chgrp",
 	"rm", "mkfifo", "truncate",
+	// archive/extract can clobber arbitrary paths; editors/patchers rewrite files
+	"tar", "cpio", "pax", "unzip", "sponge", "ed", "patch",
 }
 
 type Severity int
