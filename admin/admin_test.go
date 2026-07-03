@@ -338,6 +338,22 @@ func TestRequireSudoSafeRejectsNonRootOwnedBinary(t *testing.T) {
 	}
 }
 
+func TestRequireRootOwnedDirRejectsUserOwned(t *testing.T) {
+	// A root-owned binary in an agent-writable directory can be swapped before
+	// execve, so RequireSudoSafe must reject a non-root-owned parent directory.
+	if err := requireRootOwnedDir(t.TempDir()); err == nil {
+		t.Fatal("expected a user-owned directory to be rejected")
+	}
+}
+
+func TestRequireRootOwnedDirAcceptsSystemDir(t *testing.T) {
+	// /usr/bin is root-owned and not group/world-writable on all macOS/Linux;
+	// legitimate sudo binaries live in dirs like it, so it must pass.
+	if err := requireRootOwnedDir("/usr/bin"); err != nil {
+		t.Fatalf("expected a root-owned system directory to pass: %v", err)
+	}
+}
+
 func TestAddAndRemoveAllowedPackage(t *testing.T) {
 	paths := config.Paths{
 		SystemCommandsFile: filepath.Join(t.TempDir(), "system_commands.yaml"),

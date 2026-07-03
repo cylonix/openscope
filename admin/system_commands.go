@@ -475,6 +475,35 @@ func RequireSudoSafe(path string) error {
 	case uid != 0:
 		return fmt.Errorf("sudo binary %q is owned by uid %d, not root — its owner could modify it before privileged execution", path, uid)
 	}
+	// The directory matters too: unlinking or replacing a file needs write on its
+	// directory, not the file, so a root-owned binary sitting in an agent-writable
+	// directory can still be swapped for the agent's own program between this
+	// check and execve. Require the parent to be root-owned and not group/other
+	// writable as well.
+	if err := requireRootOwnedDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sudo binary %q: %w", path, err)
+	}
+	return nil
+}
+
+// requireRootOwnedDir fails unless dir is root-owned and not writable by group
+// or other. Kept separate from the binary check so it is directly testable
+// (constructing a root-owned file requires root; a user-owned directory does
+// not).
+func requireRootOwnedDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("directory %q: %w", dir, err)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("directory %q is writable by group or other (mode %o)", dir, info.Mode().Perm())
+	}
+	switch uid := fileOwnerUID(info); {
+	case uid < 0:
+		return fmt.Errorf("directory %q: cannot determine the owner", dir)
+	case uid != 0:
+		return fmt.Errorf("directory %q is owned by uid %d, not root — its owner could replace the binary before privileged execution", dir, uid)
+	}
 	return nil
 }
 
