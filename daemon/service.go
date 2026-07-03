@@ -6,6 +6,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -261,6 +262,14 @@ func (s Service) Handle(request ipc.Request) ipc.Response {
 		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: decision.Reason, ExitCode: ExitDenied}
 	}
 
+	// Fail closed: refuse to execute an authorized action we cannot record. In
+	// the per-user deployment the audit log is the agent's own file, so an agent
+	// that makes it unwritable must not then be able to act unlogged.
+	if err := audit.EnsureWritable(s.Paths.AuditFile); err != nil {
+		log.Printf("openscope: refusing %s %s: audit log not writable: %v", entry.Definition.App.Name, request.Action, err)
+		return ipc.Response{OK: false, App: request.App, Action: request.Action, Agent: request.Agent, Error: "audit log is not writable; refusing to execute", ExitCode: ExitExecutorError}
+	}
+
 	execRunner := s.executorFor(entry.Definition)
 	result, err := execRunner.Run(entry.Definition, request.Action, request.Params)
 	if err != nil {
@@ -459,7 +468,9 @@ func (s Service) recordAudit(event audit.Event) {
 	event.AuthMethod = s.meta.AuthMethod
 	event.SessionID = s.meta.SessionID
 	event.ExternalAgent = s.meta.ExternalAgent
-	_ = audit.Append(s.Paths.AuditFile, event)
+	if err := audit.Append(s.Paths.AuditFile, event); err != nil {
+		log.Printf("openscope: audit append failed for %s %s: %v", event.App, event.Action, err)
+	}
 
 	// Control-plane metering: the audit event minus params (metadata only).
 	if s.Usage != nil {

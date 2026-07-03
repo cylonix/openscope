@@ -76,6 +76,54 @@ func TestServiceHandleAllowedRequest(t *testing.T) {
 	}
 }
 
+func TestServiceHandleRefusesWhenAuditUnwritable(t *testing.T) {
+	home := t.TempDir()
+	paths := config.Paths{
+		ConfigDir:            filepath.Join(home, ".openscope"),
+		AppsDir:              filepath.Join(home, ".openscope", "apps.d"),
+		RunDir:               filepath.Join(home, ".openscope", "run"),
+		StateDir:             filepath.Join(home, ".openscope", "state"),
+		PoliciesFile:         filepath.Join(home, ".openscope", "policies.yaml"),
+		AgentsFile:           filepath.Join(home, ".openscope", "agents.yaml"),
+		AuditFile:            filepath.Join(home, ".openscope", "audit.jsonl"),
+		EnabledAppsFile:      filepath.Join(home, ".openscope", "state", "enabled_apps.yaml"),
+		SocketPath:           filepath.Join(home, ".openscope", "run", "openscoped.sock"),
+		AdminDir:             filepath.Join(home, "admin"),
+		ProtectedFoldersFile: filepath.Join(home, "admin", "protected_folders.yaml"),
+		MailFiltersFile:      filepath.Join(home, "admin", "mail_filters.yaml"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("EnsureLayout returned error: %v", err)
+	}
+	writeFile(t, paths.AgentsFile, "version: 1\nagents:\n  - demo\n")
+	writeFile(t, paths.PoliciesFile, "version: 1\nrules:\n  - effect: allow\n    agent: demo\n    app: notes\n    action: read_note\n    constraints:\n      folder: Work\n")
+
+	// Make the audit log unwritable by pointing it at a directory — an
+	// authorized action must be refused rather than executed unlogged.
+	auditDir := filepath.Join(home, "audit-as-dir")
+	if err := os.Mkdir(auditDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths.AuditFile = auditDir
+
+	service := NewService(paths)
+	// A distinctive output: if the executor had run, the response would carry it
+	// instead of the audit-log refusal, proving the guard fires before execution.
+	service.Executors["applescript"] = stubExecutor{result: executor.Result{Stdout: "{\"ran\":true}"}}
+
+	response := service.Handle(ipc.Request{
+		App: "notes", Action: "read_note", Agent: "demo",
+		Params: map[string]string{"folder": "Work", "note": "Sprint Plan"}, Mode: "json",
+	})
+
+	if response.OK || response.ExitCode != ExitExecutorError {
+		t.Fatalf("expected fail-closed refusal, got %#v", response)
+	}
+	if !strings.Contains(response.Error, "audit log") {
+		t.Fatalf("expected an audit-log error (executor must not have run), got %q", response.Error)
+	}
+}
+
 func TestServiceHandleProtectedFolderBlacklist(t *testing.T) {
 	home := t.TempDir()
 	paths := config.Paths{

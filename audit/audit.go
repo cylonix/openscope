@@ -50,6 +50,19 @@ type Event struct {
 	AuthoredBy     string `json:"authored_by,omitempty"`
 }
 
+// EnsureWritable reports whether the audit log can be opened for appending,
+// without writing a record. The daemon calls this before executing an
+// authorized action so it fails closed rather than acting unlogged: in the
+// per-user deployment the log is the agent's own file, which the agent could
+// make unwritable to erase its trail. Uses the same open flags as Append.
+func EnsureWritable(path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open audit log: %w", err)
+	}
+	return file.Close()
+}
+
 func Append(path string, event Event) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
