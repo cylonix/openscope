@@ -69,8 +69,8 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "decode passport: %v\n", err)
 		return 2
 	}
-	if pinFlag != "" && h.DaemonFingerprint != pinFlag {
-		fmt.Fprintf(os.Stderr, "daemon fingerprint mismatch: handle says %s, you pinned %s\n", h.DaemonFingerprint, pinFlag)
+	if err := h.VerifyPin(pinFlag); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
 

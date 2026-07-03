@@ -26,6 +26,7 @@ package passport
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/openscope/openscope/capabilities"
@@ -85,6 +86,28 @@ type Handle struct {
 	// SealedSecret is the session connect secret sealed to the recipient's
 	// registered key. Empty in --bearer mode (the secret travels out of band).
 	SealedSecret []byte `json:"sealed_secret,omitempty"`
+}
+
+// VerifyPin enforces the out-of-band daemon fingerprint before a client trusts
+// a handle. When a pin is supplied it must equal the handle's fingerprint. When
+// none is supplied, a SEALED handle is rejected: its connect secret is sealed to
+// the recipient's PUBLIC key, which an attacker who tampers with handle delivery
+// can also seal to, so the seal does not authenticate the issuer's daemon — only
+// the pinned fingerprint does. An unsealed (bearer) handle carries an
+// out-of-band connect secret that authenticates the peer, so a pin is optional
+// there (still checked when given). The fingerprint printed in the sealed-error
+// is the UNTRUSTED value from the handle; obtain the real one from the issuer.
+func (h Handle) VerifyPin(pin string) error {
+	if pin != "" {
+		if h.DaemonFingerprint != pin {
+			return fmt.Errorf("daemon fingerprint mismatch: handle says %s, you pinned %s", h.DaemonFingerprint, pin)
+		}
+		return nil
+	}
+	if len(h.SealedSecret) > 0 {
+		return fmt.Errorf("sealed passport requires --pin-fingerprint: the seal uses your public key and does not authenticate the issuer's daemon; confirm the fingerprint with the issuer over a separate channel (handle claims %s, do not trust this value)", h.DaemonFingerprint)
+	}
+	return nil
 }
 
 // Fingerprint is the pinned daemon identity: "sha256:" + hex(SHA256(ed25519Pub)).

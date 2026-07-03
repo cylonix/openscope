@@ -245,3 +245,33 @@ func TestExpired(t *testing.T) {
 		t.Fatal("past ValidUntil must be expired")
 	}
 }
+
+func TestHandleVerifyPin(t *testing.T) {
+	const fp = "sha256:abc123"
+	sealed := Handle{DaemonFingerprint: fp, SealedSecret: []byte("x")}
+	bearer := Handle{DaemonFingerprint: fp}
+
+	// A sealed handle is authenticated only by the out-of-band fingerprint (the
+	// seal uses the recipient's public key), so it must be rejected without a pin.
+	if err := sealed.VerifyPin(""); err == nil {
+		t.Error("sealed handle must require a pin")
+	}
+	if err := sealed.VerifyPin(fp); err != nil {
+		t.Errorf("sealed handle with matching pin should pass: %v", err)
+	}
+	if err := sealed.VerifyPin("sha256:wrong"); err == nil {
+		t.Error("wrong pin must be rejected")
+	}
+
+	// A bearer (unsealed) handle carries an out-of-band connect secret that
+	// authenticates the peer, so a pin is optional but still checked when given.
+	if err := bearer.VerifyPin(""); err != nil {
+		t.Errorf("bearer handle without a pin should pass: %v", err)
+	}
+	if err := bearer.VerifyPin(fp); err != nil {
+		t.Errorf("bearer handle with matching pin should pass: %v", err)
+	}
+	if err := bearer.VerifyPin("sha256:wrong"); err == nil {
+		t.Error("bearer handle with mismatched pin must be rejected")
+	}
+}
