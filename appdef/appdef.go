@@ -74,11 +74,19 @@ type Parameter struct {
 	Type      string `yaml:"type" json:"type"`
 	Required  bool   `yaml:"required" json:"required"`
 	PolicyKey string `yaml:"policy_key" json:"policy_key,omitempty"`
-	// Constraint binds a parameter to the target's admin allow-lists before it
-	// is substituted into a Command/Stdin template: "path" → must satisfy the
-	// SSH target's allowed_paths/allowed_path_prefixes; "service" → must satisfy
-	// allowed_services. Empty means a free parameter (still shell-quoted, so it
-	// cannot inject). Enforced by the ssh executor.
+	// Constraint restricts a parameter before it is substituted into a
+	// Command/Stdin template. Enforcement is per executor:
+	//   - ssh / ssm: "path" must satisfy the target's allowed_paths /
+	//     allowed_path_prefixes and "service" its allowed_services (an admin
+	//     allow-list scopes the value to that target).
+	//   - system: there is no per-target admin allow-list, so "path" only
+	//     enforces that the value is an absolute, cleaned path — it is NOT
+	//     confined to any prefix — and "service" is not enforced at all. A
+	//     root-applied system verb with a path param therefore hands that program
+	//     ANY absolute path as root; `openscope plan` surfaces it as
+	//     SYS-CUSTOM-VERB for typed acknowledgment.
+	// Empty means a free parameter (still shell-quoted on ssh/ssm and given its
+	// own argv slot on system, so it cannot inject a second argument).
 	Constraint string `yaml:"constraint,omitempty" json:"constraint,omitempty"`
 }
 
