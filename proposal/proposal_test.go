@@ -4,6 +4,7 @@
 package proposal
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -100,6 +101,12 @@ func TestParseRejectsEmptyFile(t *testing.T) {
 func TestShippedProposalsParseStrict(t *testing.T) {
 	var files []string
 	for _, root := range []string{"../dist", "../docs"} {
+		// dist/ is gitignored build output (see .gitignore), so it is absent in a
+		// clean checkout such as CI. Guard whatever proposals are present and skip
+		// a root that does not exist rather than failing the walk.
+		if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
