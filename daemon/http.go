@@ -165,6 +165,19 @@ func (hs *HTTPServer) handleActions(w http.ResponseWriter, r *http.Request) {
 		RemoteAddr: r.RemoteAddr,
 	}
 
+	// --- Pre-auth throttle ------------------------------------------------
+	// Shed floods (including malformed, absent, or unresolvable tokens) by
+	// remote IP BEFORE the token-store read and any audit write below, so an
+	// unauthenticated client cannot force unbounded disk I/O by hammering the
+	// endpoint. Keyed on remote IP because the bearer token is not yet verified,
+	// and it must vary the source to get a fresh bucket. No audit line here:
+	// dropping an anonymous flood has to stay cheap. Authenticated requests are
+	// additionally metered per token below.
+	if hs.Limiter != nil && !hs.Limiter.allow("ip:"+remoteIP(r.RemoteAddr)) {
+		writeHTTPResponse(w, errorResponse(ExitRateLimited, "rate limit exceeded; retry later"))
+		return
+	}
+
 	// --- Authenticate -----------------------------------------------------
 	// Normal token: the agent (and any bound user) comes FROM the token.
 	// Trusted-proxy token: the agent stays advisory (request body) and the

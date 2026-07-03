@@ -280,6 +280,35 @@ func TestHTTPRateLimit(t *testing.T) {
 	}
 }
 
+func TestHTTPRateLimitPreAuth(t *testing.T) {
+	// Invalid/unauthenticated requests must be throttled BEFORE the token-store
+	// read and audit write, so a flood of bad tokens cannot force unbounded I/O.
+	paths := testPaths(t)
+	writeFile(t, paths.AgentsFile, "version: 1\nagents:\n  - demo\n")
+	service := NewService(paths)
+	pepper, _ := authtoken.LoadPepper("", paths.TokenPepperFile)
+	store := &authtoken.FileStore{Path: paths.AgentTokensFile, Pepper: pepper}
+	hs := &HTTPServer{Service: service, Tokens: store, MaxBodyBytes: 1 << 20, Limiter: newRateLimiter(1, 2)}
+	s := httptest.NewTLSServer(hs.Handler())
+	t.Cleanup(s.Close)
+
+	// Burst 2: the first two bad-token attempts reach the auth check and are
+	// denied; the third is shed by the pre-auth IP throttle with 429, not denied.
+	for i := range 2 {
+		resp, decoded := postAction(t, s, "osk_bogus_token", validRequest())
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d throttled too early", i)
+		}
+		if decoded.ExitCode != ExitDenied {
+			t.Fatalf("attempt %d: exit=%d, want denied", i, decoded.ExitCode)
+		}
+	}
+	resp, decoded := postAction(t, s, "osk_bogus_token", validRequest())
+	if resp.StatusCode != http.StatusTooManyRequests || decoded.ExitCode != ExitRateLimited {
+		t.Fatalf("status=%d exit=%d, want 429/%d (pre-auth throttle)", resp.StatusCode, decoded.ExitCode, ExitRateLimited)
+	}
+}
+
 func TestHTTPHealthzOpen(t *testing.T) {
 	srv, _, _ := newHTTPFixture(t, false)
 	resp, err := srv.Client().Get(srv.URL + "/healthz")
