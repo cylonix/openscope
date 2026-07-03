@@ -480,8 +480,29 @@ func deadRuleFindings(p Proposal, targets map[string]admin.SSHTarget, defs map[s
 			add(r, r.App+"/"+r.Action, "no such app — rule will never match")
 			continue
 		}
-		if _, ok := def.Action(r.Action); !ok {
+		action, ok := def.Action(r.Action)
+		if !ok {
 			add(r, r.App+"/"+r.Action, "no such action for this app — rule will never match")
+			continue
+		}
+		// A constraint key that is not a declared policy_key for this action can
+		// never appear in the request context (PolicyContext keys by policy_key,
+		// or the parameter name when unset), so the constraint never matches: a
+		// dead allow is only noise, but a dead deny silently GRANTS because the
+		// carve-out is inert. Flag it, escalated for denies via deadSev.
+		valid := map[string]struct{}{}
+		for _, prm := range action.Parameters {
+			key := prm.PolicyKey
+			if key == "" {
+				key = prm.Name
+			}
+			valid[key] = struct{}{}
+		}
+		for k := range r.Constraints {
+			if _, ok := valid[k]; !ok {
+				add(r, fmt.Sprintf("%s/%s %s=…", r.App, r.Action, k),
+					fmt.Sprintf("constraint key %q is not a parameter of this action — it never matches, so the rule is dead", k))
+			}
 		}
 	}
 	return out

@@ -403,6 +403,46 @@ policy:
 	}
 }
 
+func TestLintDeadConstraintKey(t *testing.T) {
+	// A deny whose constraint key is misspelled (not a declared policy_key of the
+	// action) never matches, so the carve-out is silently inert. It must be
+	// flagged, and as a deny it escalates to Medium.
+	bad := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+policy:
+  add:
+    - {effect: deny, agent: bot, app: ssh, action: read_file, constraints: {paths: /etc/secret}}
+`
+	findings := Analyze(parse(t, bad), LiveState{}, minimalDefs(), DefaultBounds(), "")
+	var found *Finding
+	for i := range findings {
+		if findings[i].RuleID == "POLICY-DEAD-RULE" {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("expected POLICY-DEAD-RULE for a misspelled constraint key")
+	}
+	if found.Severity != SevMedium {
+		t.Fatalf("a dead deny must escalate to Medium, got %v", found.Severity)
+	}
+
+	// The correctly-keyed constraint on the same action is not flagged as dead.
+	ok := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+policy:
+  add:
+    - {effect: deny, agent: bot, app: ssh, action: read_file, constraints: {path: /var/log/app.log}}
+`
+	if hasFinding(Analyze(parse(t, ok), LiveState{}, minimalDefs(), DefaultBounds(), ""), "POLICY-DEAD-RULE") {
+		t.Error("a valid constraint key must not be flagged as a dead rule")
+	}
+}
+
 func TestBuildPlanVerdictBlocked(t *testing.T) {
 	src := `
 version: 1
