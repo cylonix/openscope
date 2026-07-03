@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -218,6 +219,9 @@ func buildProvider(ctx context.Context, cfg serverconfig.Config) provider.Invoke
 func loadSigner(cfg serverconfig.Config) (*receipts.Signer, error) {
 	raw := strings.TrimSpace(cfg.ReceiptPrivateKey)
 	if raw == "" {
+		if !serverconfig.DevMode() {
+			return nil, fmt.Errorf("OPENSCOPE_RECEIPT_PRIVATE_KEY is required; set a 32-byte Ed25519 seed, or OPENSCOPE_DEV=1 for local development")
+		}
 		log.Printf("WARNING: no OPENSCOPE_RECEIPT_PRIVATE_KEY set; using a fixed dev key. NEVER use this in production.")
 		seed := []byte("openscope-dev-ephemeral-key-32bb") // exactly 32 bytes
 		return receipts.NewSigner(seed[:32], cfg.ReceiptPublicKeyID)

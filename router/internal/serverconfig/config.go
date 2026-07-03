@@ -163,6 +163,9 @@ func Load() (Config, error) {
 	if cfg.AuthPepper == "" {
 		return cfg, fmt.Errorf("OPENSCOPE_AUTH_PEPPER is required")
 	}
+	if cfg.IsDevPepper() && !DevMode() {
+		return cfg, fmt.Errorf("OPENSCOPE_AUTH_PEPPER is unset (falling back to the public dev placeholder); set a real 32+ byte key, or OPENSCOPE_DEV=1 for local development")
+	}
 	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return cfg, fmt.Errorf("OPENSCOPE_TLS_CERT_FILE and OPENSCOPE_TLS_KEY_FILE must be set together")
 	}
@@ -195,6 +198,13 @@ func bodyRetentionMinutes() int {
 // IsDevPepper reports whether the loaded pepper is the unsafe default.
 // main.go logs a warning when this is true.
 func (c Config) IsDevPepper() bool { return c.AuthPepper == DevPepperPlaceholder }
+
+// DevMode reports whether OPENSCOPE_DEV is set. It gates the insecure dev-only
+// fallbacks (publicly-known placeholder secrets: session key, admin token,
+// receipt seed, auth pepper) that would otherwise be fatal at startup. Never
+// set OPENSCOPE_DEV in production — a known secret is a full auth/receipt
+// bypass.
+func DevMode() bool { return envBoolOr("OPENSCOPE_DEV", false) }
 
 func splitCSV(raw string) []string {
 	var out []string

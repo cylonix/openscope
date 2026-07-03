@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -106,6 +107,9 @@ func main() {
 	// these to mint demo keys for prospects.
 	adminToken := routerCfg.AdminToken
 	if adminToken == "" {
+		if !serverconfig.DevMode() {
+			log.Fatalf("OPENSCOPE_ADMIN_TOKEN is required; set it, or OPENSCOPE_DEV=1 for local development")
+		}
 		adminToken = "dev-admin-token-change-me"
 		log.Printf("WARNING: OPENSCOPE_ADMIN_TOKEN not set; using dev placeholder. NEVER use this in production.")
 	}
@@ -179,6 +183,9 @@ func main() {
 
 func loadSessionSecret(raw string) ([]byte, error) {
 	if raw == "" {
+		if !serverconfig.DevMode() {
+			return nil, fmt.Errorf("OPENSCOPE_SESSION_SECRET is required; set a 32+ byte key, or OPENSCOPE_DEV=1 for local development")
+		}
 		log.Printf("WARNING: OPENSCOPE_SESSION_SECRET not set; using a deterministic dev secret. NEVER use this in production.")
 		// 32 bytes of dev-only material (deterministic so sessions survive restarts during dev).
 		return []byte("openscope-dev--session-secret-32"), nil
