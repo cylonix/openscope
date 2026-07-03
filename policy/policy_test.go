@@ -149,6 +149,59 @@ func TestEvaluatePassthroughAppIgnoresParameterConstraints(t *testing.T) {
 	}
 }
 
+func TestEvaluateDenyNotBypassableByNonCanonicalPath(t *testing.T) {
+	// A coarse allow grants an agent broad access to a target; a deny carves out
+	// one sensitive path. The agent must not be able to reach the denied path by
+	// spelling it non-canonically: the executor filepath.Clean()s the value
+	// before acting, so authorization has to compare the same canonical form.
+	def := appdef.Definition{
+		App: appdef.App{Name: "ssh"},
+		Actions: map[string]appdef.Action{
+			"read_file": {
+				Parameters: []appdef.Parameter{
+					{Name: "target", PolicyKey: "target"},
+					{Name: "path", PolicyKey: "path", Constraint: "path"},
+				},
+			},
+		},
+	}
+	pf := File{
+		Version: 1,
+		Rules: []Rule{
+			{Effect: "allow", Agent: "demo", App: "ssh", Action: "read_file",
+				Constraints: map[string]string{"target": "web"}},
+			{Effect: "deny", Agent: "demo", App: "ssh", Action: "read_file",
+				Constraints: map[string]string{"target": "web", "path": "/var/log/secret.log"}},
+		},
+	}
+
+	// Every spelling below cleans to the denied path, so every one must be denied.
+	for _, spelling := range []string{
+		"/var/log/secret.log",
+		"/var/log//secret.log",
+		"/var/log/./secret.log",
+		"/var/log/../log/secret.log",
+		"/var/log/secret.log/",
+	} {
+		decision := Evaluate(pf, def, "read_file", Principal{Agent: "demo"}, map[string]string{
+			"target": "web",
+			"path":   spelling,
+		})
+		if decision.Allowed {
+			t.Fatalf("deny bypassed by non-canonical path %q", spelling)
+		}
+	}
+
+	// A genuinely different (non-denied) path under the allow still resolves to allow.
+	decision := Evaluate(pf, def, "read_file", Principal{Agent: "demo"}, map[string]string{
+		"target": "web",
+		"path":   "/var/log/app.log",
+	})
+	if !decision.Allowed {
+		t.Fatalf("expected a non-denied path to be allowed, got deny: %s", decision.Reason)
+	}
+}
+
 // sshDef is a minimal ssh app definition for principal-matching tests: one
 // action with a target param used as a policy constraint.
 func sshDef() appdef.Definition {

@@ -301,9 +301,29 @@ func anyGroupMatches(ruleGroups, principalGroups []string) bool {
 func matches(constraints, context map[string]string) bool {
 	for key, expected := range constraints {
 		actual, ok := context[key]
-		if !ok || actual != expected {
+		if !ok {
+			return false
+		}
+		if canonicalConstraintValue(actual) != canonicalConstraintValue(expected) {
 			return false
 		}
 	}
 	return true
+}
+
+// canonicalConstraintValue normalizes a path-shaped constraint value the same
+// way the executors do before they act on it. Every executor filepath.Clean()s
+// an absolute path parameter (requireAllowedPath, renderSystemArgv,
+// manageFiles), so authorization must compare the cleaned form too; otherwise a
+// deny rule keyed on the canonical path is evadable by spelling the same path
+// non-canonically ("/var/log//secret.log", "/var/log/./secret.log", a trailing
+// slash) — the deny would not match, a broader allow would, and the executor
+// would then clean the value back to the denied path and act on it. Values that
+// are not absolute paths (service names, target aliases, package names) are
+// never absolute and pass through unchanged.
+func canonicalConstraintValue(v string) string {
+	if filepath.IsAbs(v) {
+		return filepath.Clean(v)
+	}
+	return v
 }
