@@ -73,7 +73,19 @@ func LoadDefault(paths config.Paths) (File, error) {
 // Writes always target PoliciesFile (the root-owned location); the fallback is
 // read-only.
 func defaultPoliciesPath(paths config.Paths) string {
-	if paths.LegacyPoliciesFile == "" {
+	return policiesPath(paths, os.Geteuid() == 0)
+}
+
+// policiesPath resolves which policy file to read. A privileged reader (the
+// root daemon) must only ever trust the root-owned policy, so it never consults
+// the user-writable legacy path (<ConfigDir>/policies.yaml): otherwise a
+// same-uid agent could author its own allow rules by dropping that file before
+// the first `sudo openscope apply`. When the root-owned file is absent, the
+// privileged reader then loads no policy and denies by default. An unprivileged
+// reader (a personal install with no root daemon, where the agent already owns
+// everything it could confine) keeps the legacy fallback to ease upgrades.
+func policiesPath(paths config.Paths, privileged bool) string {
+	if paths.LegacyPoliciesFile == "" || privileged {
 		return paths.PoliciesFile
 	}
 	if _, err := os.Stat(paths.PoliciesFile); errors.Is(err, os.ErrNotExist) {

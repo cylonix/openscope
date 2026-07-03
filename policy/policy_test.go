@@ -46,6 +46,28 @@ func TestLoadDefaultFallsBackToLegacy(t *testing.T) {
 	}
 }
 
+func TestPoliciesPathPrivilegedIgnoresLegacy(t *testing.T) {
+	// Only the user-writable legacy file exists. An unprivileged reader still
+	// falls back to it (upgrade convenience), but a privileged reader (root
+	// daemon) must not: a same-uid agent could otherwise author its own rules by
+	// dropping ~/.openscope/policies.yaml before the first `sudo openscope apply`.
+	paths := config.Paths{
+		PoliciesFile:       filepath.Join(t.TempDir(), "policies.yaml"),        // admin dir (absent)
+		LegacyPoliciesFile: filepath.Join(t.TempDir(), "legacy-policies.yaml"), // user dir
+	}
+	if err := Save(paths.LegacyPoliciesFile, File{Version: 1,
+		Rules: []Rule{{Effect: "allow", Agent: "a", App: "ssh", Action: "read_file"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := policiesPath(paths, false); got != paths.LegacyPoliciesFile {
+		t.Fatalf("unprivileged reader should fall back to legacy, got %q", got)
+	}
+	if got := policiesPath(paths, true); got != paths.PoliciesFile {
+		t.Fatalf("privileged reader must never consult the user-writable legacy path, got %q", got)
+	}
+}
+
 func TestSaveIsWorldReadableAndCreatesDir(t *testing.T) {
 	// Daemon runs unprivileged and must read the root-owned policy, so Save must
 	// leave it 0644 even under a restrictive umask, and create a missing dir.

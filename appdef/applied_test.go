@@ -9,6 +9,26 @@ import (
 	"testing"
 )
 
+func TestVerifyRootOwnedRegistryRejectsNonRoot(t *testing.T) {
+	// A registry a same-uid agent owns (or could rewrite) must not be trusted to
+	// carry RootApplied command templates. Tests never run as root, so the temp
+	// file is owned by the current (non-root) user — exactly the case to reject.
+	path := filepath.Join(t.TempDir(), "app_definitions.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\napps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRootOwnedRegistry(path); err == nil {
+		t.Fatal("expected a non-root-owned registry to be rejected")
+	}
+}
+
+func TestVerifyRootOwnedRegistryMissingIsOK(t *testing.T) {
+	// No registry means no custom verbs have been applied — not an error.
+	if err := verifyRootOwnedRegistry(filepath.Join(t.TempDir(), "absent.yaml")); err != nil {
+		t.Fatalf("missing registry should be fine, got: %v", err)
+	}
+}
+
 func cmdDef(name, executor string, actions map[string]Action) Definition {
 	return Definition{
 		Version: 1,

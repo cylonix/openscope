@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -219,6 +220,19 @@ func AssembleDefinitions(bundled []Definition, appsDir, registryFile string, sys
 		}
 	}
 
+	// A privileged process (the root daemon) trusts the applied registry to
+	// carry RootApplied command templates that will run as root. Before trusting
+	// it, verify the registry and its directory are genuinely root-owned and not
+	// agent-writable; otherwise a same-uid agent who could rewrite the registry
+	// (or swap it via a writable directory) would gain privileged execution.
+	// Unprivileged callers (a personal daemon, the capabilities CLI) confer no
+	// privilege, so the check does not apply to them — and it keeps tests, which
+	// never run as root, on the existing path.
+	if os.Geteuid() == 0 {
+		if err := verifyRootOwnedRegistry(registryFile); err != nil {
+			return nil, err
+		}
+	}
 	applied, err := LoadAppliedFile(registryFile)
 	if err != nil {
 		return nil, err
@@ -229,6 +243,38 @@ func AssembleDefinitions(bundled []Definition, appsDir, registryFile string, sys
 		}
 	}
 	return defs, nil
+}
+
+// verifyRootOwnedRegistry ensures the applied-verb registry (and the directory
+// containing it) is owned by root and not writable by group or other, so a
+// same-uid agent can neither rewrite a RootApplied command template nor swap
+// the file out via directory write. A missing registry is fine — it just means
+// no custom verbs have been applied. Callers gate this on running privileged,
+// because RootApplied only confers privilege under a root daemon.
+func verifyRootOwnedRegistry(path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	for _, p := range []string{path, filepath.Dir(path)} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("applied verb registry %q: %w", p, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("applied verb registry %q is a symlink; refusing to trust it as root-owned", p)
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("applied verb registry %q: cannot determine file owner", p)
+		}
+		if st.Uid != 0 {
+			return fmt.Errorf("applied verb registry %q is owned by uid %d, not root; a non-root owner could substitute a privileged command template", p, st.Uid)
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("applied verb registry %q is writable by group or other (mode %04o); refusing to trust it", p, info.Mode().Perm())
+		}
+	}
+	return nil
 }
 
 // withoutCommandActions returns a copy of d with command-template actions
