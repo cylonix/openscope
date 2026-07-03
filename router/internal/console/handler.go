@@ -23,6 +23,12 @@ type Server struct {
 	Read        *ReadStore
 	DevInsecure bool // local-dev mode: don't set Secure on cookies
 
+	// AllowRoleSwitch enables POST /api/v1/session/switch. It lets a session
+	// re-issue itself under a different role, including the vendor "engineer"
+	// persona that returns cross-tenant aggregates, so it is a self-elevation
+	// path. Only safe in the single throwaway-tenant demo; OFF by default.
+	AllowRoleSwitch bool
+
 	// Region is the Bedrock serving region (e.g. "us-west-2"). Stamped onto
 	// event rows so the dashboards can show "served by AWS Bedrock · us-west-2"
 	// next to each call. Mirrors the router's OPENSCOPE_BEDROCK_REGION.
@@ -116,7 +122,11 @@ func (s *Server) region() string {
 
 func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/session", s.handleLogin)
-	mux.HandleFunc("POST /api/v1/session/switch", s.requireSession(s.handleSwitchRole))
+	// Self-service role switch is a demo-only convenience and a self-elevation
+	// path; mount it only when explicitly enabled (see AllowRoleSwitch).
+	if s.AllowRoleSwitch {
+		mux.HandleFunc("POST /api/v1/session/switch", s.requireSession(s.handleSwitchRole))
+	}
 	mux.HandleFunc("POST /api/v1/logout", s.handleLogout)
 	mux.HandleFunc("GET  /api/v1/me", s.requireSession(s.handleMe))
 	mux.HandleFunc("GET  /api/v1/events", s.requireSession(s.handleEvents))
@@ -262,6 +272,13 @@ type switchRequest struct {
 // (the runbook lists them), so this grants no access the holder couldn't get by
 // logging in with the other code. Disable in any multi-tenant deployment.
 func (s *Server) handleSwitchRole(w http.ResponseWriter, r *http.Request, sess Session) {
+	// Defense in depth: the route is only mounted when AllowRoleSwitch is set,
+	// but refuse here too so the self-elevation path is never reachable in a
+	// multi-tenant deployment even if wired up by mistake.
+	if !s.AllowRoleSwitch {
+		writeError(w, http.StatusForbidden, "forbidden", "role switch is disabled")
+		return
+	}
 	var req switchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())

@@ -95,6 +95,7 @@ func main() {
 		Sessions:                sessions,
 		Read:                    read,
 		DevInsecure:             routerCfg.DevInsecureCookies,
+		AllowRoleSwitch:         routerCfg.DemoRoleSwitch,
 		Region:                  routerCfg.BedrockRegion,
 		EnabledModels:           billing.ParseEnabledSet(routerCfg.EnabledModels),
 		DefaultMonthlyBudgetUSD: routerCfg.DefaultMonthlyBudgetUSD,

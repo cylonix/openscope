@@ -105,6 +105,12 @@ type Config struct {
 	AdminToken         string
 	DevInsecureCookies bool
 
+	// DemoRoleSwitch enables POST /api/v1/session/switch, which lets a session
+	// change its own role (including into the vendor "engineer" persona that sees
+	// cross-tenant aggregates). Safe only in the single throwaway-tenant demo;
+	// OFF by default so a real multi-tenant deployment cannot self-elevate.
+	DemoRoleSwitch bool
+
 	// BodyRetentionMinutes controls auto-purge of sensitive.* bodies
 	// (prompts/responses/uploads). 0 = keep forever (the product default —
 	// retention is the customer's call); >0 = purge rows older than N
@@ -155,6 +161,7 @@ func Load() (Config, error) {
 		SessionSecret:           os.Getenv("OPENSCOPE_SESSION_SECRET"),
 		AdminToken:              os.Getenv("OPENSCOPE_ADMIN_TOKEN"),
 		DevInsecureCookies:      envBoolOr("OPENSCOPE_DEV_INSECURE_COOKIES", true),
+		DemoRoleSwitch:          envBoolOr("OPENSCOPE_DEMO_ROLE_SWITCH", false),
 		BodyRetentionMinutes:    bodyRetentionMinutes(),
 	}
 	if cfg.DatabaseURL == "" {
