@@ -386,6 +386,7 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 	}
 
 	out = append(out, passthroughFindings(p, effDefs)...)
+	out = append(out, passthroughModeFindings(p)...)
 	out = append(out, deadRuleFindings(p, targetByAlias, effDefs)...)
 	out = append(out, ssmGrantFindings(allows, effDefs)...)
 	out = append(out, passFindings(p, effSystem)...)
@@ -880,6 +881,26 @@ func targetsForRule(r policy.Rule, effTargets []admin.SSHTarget) []string {
 	out := make([]string, 0, len(effTargets))
 	for _, t := range effTargets {
 		out = append(out, t.Alias)
+	}
+	return out
+}
+
+// passthroughModeFindings flags a proposal-added app declared
+// security_mode: passthrough. Policy evaluates a passthrough app with an EMPTY
+// constraint context (see appdef PolicyContext), so every constrained rule on
+// it is silently voided: a scoped allow stops matching, and — more dangerously
+// — a scoped deny carve-out never fires. A reviewer who writes constraints
+// against such an app gets no enforcement, so it demands typed acknowledgment.
+func passthroughModeFindings(p Proposal) []Finding {
+	var out []Finding
+	for _, d := range p.Apps.Add {
+		if d.App.SecurityMode == "passthrough" {
+			out = append(out, Finding{
+				RuleID: "APP-PASSTHROUGH-UNSCOPED", Severity: SevHigh, Resource: d.App.Name,
+				Summary: "app is security_mode: passthrough — policy is evaluated with no constraint context, so every constrained allow/deny on it is silently ignored (target/path/service scoping and deny carve-outs do not apply)",
+				Fix:     "use security_mode: protected so parameter constraints are enforced; keep passthrough only if the verbs are meant to be unscoped, acknowledging that no policy constraint will bind",
+			})
+		}
 	}
 	return out
 }

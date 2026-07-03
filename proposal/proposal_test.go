@@ -403,6 +403,41 @@ policy:
 	}
 }
 
+func TestLintPassthroughAppUnscoped(t *testing.T) {
+	// A proposal introducing a passthrough app must be flagged: policy is
+	// evaluated with no constraint context, so constrained rules are ignored.
+	pass := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+apps:
+  add:
+    - version: 1
+      app: {name: myapp, executor: ssh, security_mode: passthrough}
+      actions:
+        ping: {command: "echo ok"}
+`
+	if !hasFinding(Analyze(parse(t, pass), LiveState{}, minimalDefs(), DefaultBounds(), ""), "APP-PASSTHROUGH-UNSCOPED") {
+		t.Error("expected APP-PASSTHROUGH-UNSCOPED for a passthrough app")
+	}
+
+	// The same app as protected must not be flagged.
+	prot := `
+version: 1
+kind: openscope-proposal
+metadata: {name: t}
+apps:
+  add:
+    - version: 1
+      app: {name: myapp, executor: ssh, security_mode: protected}
+      actions:
+        ping: {command: "echo ok"}
+`
+	if hasFinding(Analyze(parse(t, prot), LiveState{}, minimalDefs(), DefaultBounds(), ""), "APP-PASSTHROUGH-UNSCOPED") {
+		t.Error("a protected app must not be flagged as unscoped")
+	}
+}
+
 func TestLintDeadConstraintKey(t *testing.T) {
 	// A deny whose constraint key is misspelled (not a declared policy_key of the
 	// action) never matches, so the carve-out is silently inert. It must be
