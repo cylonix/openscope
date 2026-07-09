@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -364,26 +363,41 @@ func (h *ChatHandler) processInner(ctx context.Context, principal tenancy.Princi
 	}
 	out.MonthlyCapUSD = capUSD
 
-	mtd, budgetErr := billing.CheckMonthlyCap(ctx, h.Store, principal.TenantID, capUSD)
-	if errors.Is(budgetErr, billing.ErrBudgetExceeded) {
+	concatenated := concatMessages(in.Messages)
+
+	// Reserve this request's estimated max cost against the cap BEFORE calling
+	// the provider, counting other in-flight reservations, so concurrent
+	// requests cannot all read the same under-cap total and overshoot. The
+	// reservation is released when the real usage is recorded, or on any early
+	// return below.
+	estCost := billing.EstimateMaxCostUSD(modelID, len(concatenated), clampTokens(in.MaxTokens, h.maxTokensOrDefault()))
+	reservationID, mtd, admitted, err := h.Store.ReserveBudget(ctx, principal.TenantID, estCost, capUSD)
+	if err != nil {
+		return nil, fmt.Errorf("budget reserve: %w", err)
+	}
+	if !admitted {
 		_ = h.Store.AppendRouterEvent(ctx, nil, store.RouterEvent{
 			RequestID: requestID, TenantID: principal.TenantID, APIKeyID: &keyID,
 			Role: principal.Role, Endpoint: in.Endpoint, Model: modelID,
 			Decision: "deny", Result: "budget_exceeded",
-			Reason: withWorkspace(in.Workspace, fmt.Sprintf("month-to-date spend $%.4f >= cap $%.2f", mtd, capUSD)),
+			Reason: withWorkspace(in.Workspace, fmt.Sprintf("monthly cap $%.2f reached (committed $%.4f plus in-flight reservations)", capUSD, mtd)),
 		})
 		out.Decision, out.Result = "deny", "budget_exceeded"
 		out.MonthToDateUSD = mtd
 		out.HTTPStatus, out.ErrCode = http.StatusTooManyRequests, "budget_exceeded"
-		out.ErrMessage = fmt.Sprintf("monthly budget cap exceeded ($%.4f / $%.2f used)", mtd, capUSD)
+		out.ErrMessage = fmt.Sprintf("monthly budget cap reached ($%.2f); $%.4f committed plus in-flight requests", capUSD, mtd)
 		out.Reason = out.ErrMessage
 		return out, nil
 	}
-	if budgetErr != nil {
-		return nil, fmt.Errorf("budget check: %w", budgetErr)
-	}
+	// Release the reservation on any path that does not record real usage; the
+	// success path releases it inside the persist tx below and clears this flag.
+	reservationReleased := false
+	defer func() {
+		if !reservationReleased {
+			_ = h.Store.ReleaseBudget(ctx, nil, reservationID)
+		}
+	}()
 
-	concatenated := concatMessages(in.Messages)
 	promptSHA := receipts.SHA256Hex([]byte(concatenated))
 	// storedBody is what we persist: the full text with any large agent system
 	// prompt (env scaffolding) summarized. promptSHA above commits to the FULL
@@ -516,6 +530,11 @@ func (h *ChatHandler) processInner(ctx context.Context, principal tenancy.Princi
 	}); err != nil {
 		return nil, fmt.Errorf("usage write: %w", err)
 	}
+	// Real usage is now recorded; drop the reservation in the same tx so the
+	// estimate and the actual cost never both count against the cap.
+	if err := h.Store.ReleaseBudget(ctx, tx, reservationID); err != nil {
+		return nil, fmt.Errorf("budget release: %w", err)
+	}
 	receipt := h.signReceipt(receipts.Payload{
 		Version: 1, RequestID: requestID, TenantID: principal.TenantID,
 		Timestamp: time.Now().UTC(), Endpoint: in.Endpoint, Workspace: in.Workspace,
@@ -533,6 +552,7 @@ func (h *ChatHandler) processInner(ctx context.Context, principal tenancy.Princi
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("tx commit: %w", err)
 	}
+	reservationReleased = true // released atomically with the usage insert above
 
 	out.Decision, out.Result = "allow", "success"
 	out.Content = brResp.Content

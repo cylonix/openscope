@@ -1,41 +1,21 @@
 package billing
 
-import (
-	"context"
-	"errors"
-	"fmt"
-
-	"github.com/google/uuid"
-)
-
-// SpendStore is the subset of pkg/store needed for budget enforcement.
-// *store.Store satisfies this interface (defined in pkg/store/usage_metrics.go).
-type SpendStore interface {
-	GetMonthlySpend(ctx context.Context, tenantID uuid.UUID) (float64, error)
-}
-
-var ErrBudgetExceeded = errors.New("monthly Bedrock budget exceeded for tenant")
-
-// CheckMonthlyCap is the Layer-1 (router-side) budget check. Returns
-// ErrBudgetExceeded if the tenant's accumulated total_cost_usd for the
-// current calendar month is at or above capUSD. The caller resolves the
-// cap: app.tenants.monthly_budget_usd when set, else the deployment-wide
-// OPENSCOPE_DEFAULT_MONTHLY_BUDGET_USD.
+// EstimateMaxCostUSD is a conservative upper bound on a request's cost, used to
+// reserve budget BEFORE the provider call (see store.ReserveBudget). It prices
+// the FULL clamped max_tokens as output (actual output is usually less) plus an
+// input-token estimate from the prompt byte length (~4 bytes/token). Over-
+// estimating is the safe direction: it reserves more, so a tenant near the cap
+// is denied rather than allowed to overshoot. Unknown models price at 0 (they
+// exert no cap pressure — the same as costBreakdown/CostUSD for an unknown id).
 //
-// A cloud-side hard cap (e.g. AWS Budgets + IAM-policy-attach in the
-// customer's Bedrock account — see router/deploy/iam-bedrock.md) fires
-// regardless of this check. The two layers together protect against:
-//
-//   - the expected path: router miscounts → Layer 2 catches at the hard cap
-//   - the bug path: router has a budget-check bypass → Layer 2 catches anyway
-//   - the malicious path: someone hits Bedrock with leaked creds → Layer 2 catches
-func CheckMonthlyCap(ctx context.Context, store SpendStore, tenantID uuid.UUID, capUSD float64) (currentUSD float64, err error) {
-	currentUSD, err = store.GetMonthlySpend(ctx, tenantID)
-	if err != nil {
-		return 0, fmt.Errorf("query monthly spend: %w", err)
+// Admission is atomic and race-free: store.ReserveBudget counts committed usage
+// plus other in-flight reservations under a per-tenant lock, replacing the old
+// non-atomic read-then-write check that let concurrent requests overshoot.
+func EstimateMaxCostUSD(modelID string, promptBytes, maxOutputTokens int) float64 {
+	m := Find(modelID)
+	if m == nil {
+		return 0
 	}
-	if currentUSD >= capUSD {
-		return currentUSD, ErrBudgetExceeded
-	}
-	return currentUSD, nil
+	estInputTokens := promptBytes / 4
+	return float64(estInputTokens)*m.InputUSDPerToken + float64(maxOutputTokens)*m.OutputUSDPerToken
 }

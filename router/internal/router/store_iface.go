@@ -29,8 +29,9 @@ type RecordStore interface {
 	InsertUsageMetric(ctx context.Context, tx Tx, u store.UsageMetric) error
 	InsertReceipt(ctx context.Context, tx Tx, r store.ReceiptRow) error
 	InsertUploadedDocument(ctx context.Context, tx Tx, d store.UploadedDocument) error
-	GetMonthlySpend(ctx context.Context, tenantID uuid.UUID) (float64, error)
 	GetTenantBudget(ctx context.Context, tenantID uuid.UUID) (*float64, error)
+	ReserveBudget(ctx context.Context, tenantID uuid.UUID, estCostUSD, capUSD float64) (reservationID uuid.UUID, committedMTD float64, admitted bool, err error)
+	ReleaseBudget(ctx context.Context, tx Tx, reservationID uuid.UUID) error
 }
 
 // NewPGRecordStore adapts *store.Store to RecordStore. The adapter exists
@@ -73,12 +74,16 @@ func (p pgRecordStore) InsertUploadedDocument(ctx context.Context, tx Tx, d stor
 	return p.s.InsertUploadedDocument(ctx, asPgxTx(tx), d)
 }
 
-func (p pgRecordStore) GetMonthlySpend(ctx context.Context, tenantID uuid.UUID) (float64, error) {
-	return p.s.GetMonthlySpend(ctx, tenantID)
-}
-
 func (p pgRecordStore) GetTenantBudget(ctx context.Context, tenantID uuid.UUID) (*float64, error) {
 	return p.s.GetTenantBudget(ctx, tenantID)
+}
+
+func (p pgRecordStore) ReserveBudget(ctx context.Context, tenantID uuid.UUID, estCostUSD, capUSD float64) (uuid.UUID, float64, bool, error) {
+	return p.s.ReserveBudget(ctx, tenantID, estCostUSD, capUSD)
+}
+
+func (p pgRecordStore) ReleaseBudget(ctx context.Context, tx Tx, reservationID uuid.UUID) error {
+	return p.s.ReleaseBudget(ctx, asPgxTx(tx), reservationID)
 }
 
 // WithJSONLMirror decorates a RecordStore so every router event is also
@@ -128,9 +133,12 @@ func (m jsonlMirror) InsertReceipt(ctx context.Context, tx Tx, r store.ReceiptRo
 func (m jsonlMirror) InsertUploadedDocument(ctx context.Context, tx Tx, d store.UploadedDocument) error {
 	return m.rs.InsertUploadedDocument(ctx, tx, d)
 }
-func (m jsonlMirror) GetMonthlySpend(ctx context.Context, tenantID uuid.UUID) (float64, error) {
-	return m.rs.GetMonthlySpend(ctx, tenantID)
-}
 func (m jsonlMirror) GetTenantBudget(ctx context.Context, tenantID uuid.UUID) (*float64, error) {
 	return m.rs.GetTenantBudget(ctx, tenantID)
+}
+func (m jsonlMirror) ReserveBudget(ctx context.Context, tenantID uuid.UUID, estCostUSD, capUSD float64) (uuid.UUID, float64, bool, error) {
+	return m.rs.ReserveBudget(ctx, tenantID, estCostUSD, capUSD)
+}
+func (m jsonlMirror) ReleaseBudget(ctx context.Context, tx Tx, reservationID uuid.UUID) error {
+	return m.rs.ReleaseBudget(ctx, tx, reservationID)
 }

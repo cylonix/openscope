@@ -29,8 +29,37 @@ type memStore struct {
 	monthlySpend float64
 	tenantBudget *float64
 
+	// reservations models store.ReserveBudget: admission counts committed spend
+	// plus active reservations, so a second in-flight request sees the first.
+	reservations map[uuid.UUID]float64
+
 	committed  bool
 	rolledBack bool
+}
+
+func (m *memStore) reservedTotal() float64 {
+	var t float64
+	for _, c := range m.reservations {
+		t += c
+	}
+	return t
+}
+
+func (m *memStore) ReserveBudget(_ context.Context, _ uuid.UUID, estCostUSD, capUSD float64) (uuid.UUID, float64, bool, error) {
+	if m.monthlySpend+m.reservedTotal() >= capUSD {
+		return uuid.Nil, m.monthlySpend, false, nil
+	}
+	if m.reservations == nil {
+		m.reservations = map[uuid.UUID]float64{}
+	}
+	id := uuid.New()
+	m.reservations[id] = estCostUSD
+	return id, m.monthlySpend, true, nil
+}
+
+func (m *memStore) ReleaseBudget(_ context.Context, _ Tx, id uuid.UUID) error {
+	delete(m.reservations, id)
+	return nil
 }
 
 type memTx struct{ s *memStore }
@@ -61,9 +90,6 @@ func (m *memStore) InsertReceipt(_ context.Context, _ Tx, r store.ReceiptRow) er
 }
 func (m *memStore) InsertUploadedDocument(_ context.Context, _ Tx, _ store.UploadedDocument) error {
 	return nil
-}
-func (m *memStore) GetMonthlySpend(context.Context, uuid.UUID) (float64, error) {
-	return m.monthlySpend, nil
 }
 func (m *memStore) GetTenantBudget(context.Context, uuid.UUID) (*float64, error) {
 	return m.tenantBudget, nil
@@ -213,6 +239,41 @@ func TestProcessBudgetExceeded(t *testing.T) {
 	}
 	if out.MonthlyCapUSD != 25.00 {
 		t.Errorf("cap = %v, want 25.00", out.MonthlyCapUSD)
+	}
+}
+
+func TestProcessReleasesReservationOnSuccess(t *testing.T) {
+	ms := &memStore{}
+	h := newTestHandler(t, ms, &provider.Fake{})
+
+	out := run(t, h, chatInput{Endpoint: "/v1/chat", Messages: userMsg("hello")})
+
+	if out.Decision != "allow" {
+		t.Fatalf("want allow, got %s/%s", out.Decision, out.Result)
+	}
+	// The reservation must be released (in the persist tx), so none leak — a
+	// leaked reservation would keep counting against the cap until it expires.
+	if len(ms.reservations) != 0 {
+		t.Fatalf("reservation leaked after success: %d still held", len(ms.reservations))
+	}
+}
+
+func TestProcessReleasesReservationOnProviderError(t *testing.T) {
+	ms := &memStore{}
+	fake := &provider.Fake{Reply: func(provider.Request) (*provider.Response, error) {
+		return nil, errors.New("upstream boom")
+	}}
+	h := newTestHandler(t, ms, fake)
+
+	// The provider call happens AFTER the reservation is taken; an upstream error
+	// returns early, and the deferred release must still free the reservation.
+	out := run(t, h, chatInput{Endpoint: "/v1/chat", Messages: userMsg("hello")})
+
+	if out.ErrCode != "upstream_error" {
+		t.Fatalf("want upstream_error, got %q (%s/%s)", out.ErrCode, out.Decision, out.Result)
+	}
+	if len(ms.reservations) != 0 {
+		t.Fatalf("reservation leaked after an early-return provider error: %d still held", len(ms.reservations))
 	}
 }
 
