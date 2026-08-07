@@ -60,19 +60,33 @@ func RenderHTML(p Plan) string {
 		{plain("ssh targets"), plain(fmt.Sprintf("+%d add, -%d remove", c.SSHTargetsAdded, c.SSHTargetsRemoved))},
 		{plain("system allow-lists"), plain(fmt.Sprintf("%s — %d mgrs · %d pkgs · %d svcs · %d procs · %d ports",
 			sysCell, c.NewManagers, c.NewPackages, c.NewServices, c.NewProcNames, c.NewPorts))},
-		{plain("custom verbs"), plain(fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded))},
+		{plain("custom verbs"), plain(verbChangeCell(c))},
 		{plain("policy rules"), plain(fmt.Sprintf("+%d allow, +%d deny (new vs live)", c.PolicyAllowNew, c.PolicyDenyNew))},
 	})
-	b.WriteString(`<p class="note">This proposal only ADDS access; nothing is narrowed or removed.</p>`)
+	if c.VerbsReplaced > 0 {
+		fmt.Fprintf(&b, `<p class="note">This proposal ADDS access and REPLACES %d approved verb command(s) — review the diff below.</p>`, c.VerbsReplaced)
+	} else {
+		b.WriteString(`<p class="note">This proposal only ADDS access; nothing is narrowed or removed.</p>`)
+	}
 
 	// Custom verbs: the exact command templates this proposal pins root-owned.
-	if vrows := verbRows(pr); len(vrows) > 0 {
+	if vrows := verbRows(pr, replacedSet(p.VerbDiffs)); len(vrows) > 0 {
 		b.WriteString(`<h2>Custom verbs added <span class="muted">(exact command templates, pinned root-owned at apply)</span></h2>`)
 		vcells := make([][]cell, 0, len(vrows))
 		for _, r := range vrows {
-			vcells = append(vcells, []cell{mono(r[0]), mono(r[1]), plain(r[2])})
+			vcells = append(vcells, []cell{mono(r[0]), plain(r[1]), mono(r[2]), mono(r[3]), plain(r[4])})
 		}
-		htmlTable(&b, []string{"App · Action", "Command", "Params"}, vcells)
+		htmlTable(&b, []string{"App · Action", "Status", "Command", "Verify", "Params"}, vcells)
+	}
+
+	// Verb replacements: old approved template next to the proposed one.
+	if len(p.VerbDiffs) > 0 {
+		b.WriteString(`<h2>Verb replacements <span class="muted">(old approved → proposed)</span></h2>`)
+		drows := make([][]cell, 0, len(p.VerbDiffs))
+		for _, d := range p.VerbDiffs {
+			drows = append(drows, []cell{mono(d.AppAction), mono(dash(d.OldCommand)), mono(dash(d.NewCommand))})
+		}
+		htmlTable(&b, []string{"App · Action", "Old command", "New command"}, drows)
 	}
 
 	// Capabilities.

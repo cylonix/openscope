@@ -37,6 +37,67 @@ type SSHTarget struct {
 	// grant for one host can't read files staged for another — and never widened
 	// to reach secrets/home (the planner blocks that).
 	AllowedUploadSources []string `yaml:"allowed_upload_sources,omitempty"`
+	// Facts are broker-recorded host observations (os/arch, docker versions),
+	// pinned by `openscope apply` when it probes a proposed target. They ground
+	// plan review in the host's reality (e.g. "this target runs docker-compose
+	// v1") and let the executor enforce artifact platform gates. Never
+	// proposal-authored authority — informational, refreshed by re-proposing the
+	// target.
+	Facts *TargetFacts `yaml:"facts,omitempty"`
+	// Criticality is the human-declared tier of this host: "prod", "staging",
+	// or "lab". Proposal-authored and human-confirmed at apply, unlike Facts.
+	// The planner scales consequence findings with it (a mutating verb on a
+	// prod target demands more than one on a lab box).
+	Criticality string `yaml:"criticality,omitempty"`
+}
+
+// TargetFacts holds probed host observations. All fields are best-effort:
+// empty means "not observed", never "absent on the host".
+type TargetFacts struct {
+	OS       string `yaml:"os,omitempty"`      // uname -s, e.g. Linux
+	Arch     string `yaml:"arch,omitempty"`    // uname -m, e.g. x86_64
+	Docker   string `yaml:"docker,omitempty"`  // `docker --version` first line
+	Compose  string `yaml:"compose,omitempty"` // `docker-compose --version` first line
+	ProbedAt string `yaml:"probed_at,omitempty"`
+	// Containers are the names running on the host when probed (`docker ps`),
+	// the co-tenancy picture that turns "can modify this host" into "shares the
+	// host with traefik, which fronts every domain here".
+	Containers []string `yaml:"containers,omitempty"`
+}
+
+// Platform renders the facts as a normalized os/arch pair ("linux/amd64"),
+// mapping uname spellings onto the OCI/docker platform vocabulary. Empty when
+// either half is unobserved.
+func (f TargetFacts) Platform() string {
+	osName := strings.ToLower(strings.TrimSpace(f.OS))
+	arch := strings.ToLower(strings.TrimSpace(f.Arch))
+	switch arch {
+	case "x86_64":
+		arch = "amd64"
+	case "aarch64", "arm64":
+		arch = "arm64"
+	case "armv7l", "armv6l":
+		arch = "arm"
+	case "i386", "i686":
+		arch = "386"
+	}
+	if osName == "" || arch == "" {
+		return ""
+	}
+	return osName + "/" + arch
+}
+
+// ComposeMajorV1 reports whether the probed docker-compose is the Python v1
+// line (e.g. "docker-compose version 1.29.2, build ..."), whose container
+// recreate path is known to crash on images saved by modern Docker.
+func (f TargetFacts) ComposeMajorV1() bool {
+	c := strings.TrimSpace(f.Compose)
+	for _, prefix := range []string{"docker-compose version 1.", "docker-compose version v1."} {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func LoadSSHTargets(path string) (SSHTargets, error) {
@@ -197,6 +258,11 @@ func (t SSHTarget) Validate() error {
 			return fmt.Errorf("ssh target %q allowed upload source %q must be absolute", t.Alias, prefix)
 		}
 	}
+	switch t.Criticality {
+	case "", "prod", "staging", "lab":
+	default:
+		return fmt.Errorf("ssh target %q criticality must be prod, staging, or lab, got %q", t.Alias, t.Criticality)
+	}
 	return nil
 }
 
@@ -229,6 +295,7 @@ func normalizeSSHTarget(target SSHTarget) SSHTarget {
 	target.User = strings.TrimSpace(target.User)
 	target.IdentityFile = strings.TrimSpace(target.IdentityFile)
 	target.ProxyJump = strings.TrimSpace(target.ProxyJump)
+	target.Criticality = strings.TrimSpace(target.Criticality)
 	target.AllowedServices = normalizeStringList(target.AllowedServices)
 	target.AllowedPaths = normalizePathList(target.AllowedPaths)
 	target.AllowedPathPrefixes = normalizePathList(target.AllowedPathPrefixes)

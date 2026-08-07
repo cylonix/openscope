@@ -131,6 +131,35 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 		})
 	}
 
+	// VERB-REPLACES-APPROVED / VERB-SHADOWS-BUNDLED: a proposed action that
+	// collides with an existing definition changes behavior a reviewer already
+	// approved — apply merges overlay-wins, so without this the replacement
+	// renders exactly like a brand-new verb. Compared against the LOADED defs
+	// (not effDefs, which already contains the proposal's own actions).
+	out = append(out, verbReplacementFindings(verbDiffs(p, defs))...)
+
+	// META-UNSTAMPED: an empty authored_by breaks the audit trail — a pinned
+	// verb should be traceable to the session that authored it.
+	if ab := p.Metadata.AuthoredBy; strings.TrimSpace(ab.Tool) == "" && strings.TrimSpace(ab.Model) == "" && strings.TrimSpace(ab.Session) == "" {
+		out = append(out, Finding{
+			RuleID: "META-UNSTAMPED", Severity: SevWarn,
+			Resource: "metadata.authored_by",
+			Summary:  "proposal is unstamped — no tool/model/session recorded, so the audit trail cannot tie this change to its authoring session",
+			Fix:      "have the authoring agent fill metadata.authored_by {tool, model, session}",
+		})
+	}
+
+	// SSH-OPS-HAZARD: advisory notes for command shapes with known operational
+	// failure modes (compose-v1 force-recreate, stop-before-up down-windows,
+	// ungated docker load). Plan verifies authority, not correctness — these
+	// annotate the exact command the reviewer is about to acknowledge.
+	out = append(out, operationalHazardFindings(p, allows, effTargets)...)
+
+	// Effect-calculus findings: fronting-proxy blast radius, impact-contract
+	// mismatches, and missing impact declarations — consequence bounds derived
+	// from the command chain itself.
+	out = append(out, effectFindings(p, allows, effTargets)...)
+
 	// SSH-ROOT-USER + SSH-KEY-{READABLE,EXPOSED}: per proposed target. Live
 	// targets are audited by `openscope doctor`; the plan gates what the
 	// proposal introduces.
@@ -220,12 +249,46 @@ func Analyze(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bo
 	// authorize in this same view.
 	writes := customSSHWrites(allows, effTargets, effDefs)
 	for _, wr := range writes {
+		crit := targetByAlias[wr.alias].Criticality
+		summary := "non-inspection ssh action; runs an approved command that can modify " + wr.alias + wr.desc
+		if crit != "" {
+			summary = "non-inspection ssh action; runs an approved command that can modify " + wr.alias + " (criticality: " + crit + ")" + wr.desc
+		}
 		out = append(out, Finding{
 			RuleID: "SSH-WRITE", Severity: SevHigh,
 			Resource: wr.alias + ":" + wr.action,
-			Summary:  "non-inspection ssh action; runs an approved command that can modify " + wr.alias + wr.desc,
-			Fix:      "confirm the command this action runs" + wr.cmdHint + " and keep its path/service constraints tight; add SSH-WRITE to bounds.blocking_rules to forbid",
+			Summary:  summary,
+			Fix: "plan verifies AUTHORITY, not correctness — before acknowledging, answer: (1) if the command dies mid-chain, what state is " + wr.alias + " left in? (2) what confirms success (declare verify:)? (3) what is the rollback? " +
+				"Then confirm the command this action runs" + wr.cmdHint + " and keep its path/service constraints tight; add SSH-WRITE to bounds.blocking_rules to forbid",
 		})
+		// SSH-PROD-WRITE: a mutating verb on a prod-tier host is its own
+		// acknowledgment — the operator confirms the PROD blast radius
+		// explicitly, not as a side effect of the generic write ack.
+		if crit == "prod" {
+			out = append(out, Finding{
+				RuleID: "SSH-PROD-WRITE", Severity: SevHigh,
+				Resource: wr.alias + ":" + wr.action,
+				Summary:  wr.alias + " is declared criticality: prod — this verb mutates a production host",
+				Fix:      "confirm the derived effects and failure walk above; on prod, verify: and impact.rollback are the minimum bar; add SSH-PROD-WRITE to bounds.blocking_rules to forbid prod writes outright",
+			})
+		}
+		// SSH-WRITE-NO-VERIFY: a mutating verb with no declared post-condition
+		// reports success whenever its command exits 0 — which is not the same
+		// as the host being healthy (a recreated container can crash-loop
+		// seconds after `ps` prints "Up"). On a prod-tier target this rises to
+		// MEDIUM: an unverified prod mutation is a silent-outage machine.
+		if !wr.hasVerify {
+			sev := SevWarn
+			if crit == "prod" {
+				sev = SevMedium
+			}
+			out = append(out, Finding{
+				RuleID: "SSH-WRITE-NO-VERIFY", Severity: sev,
+				Resource: wr.alias + ":" + wr.action,
+				Summary:  "mutating verb declares no verify: post-condition — the broker reports success even if the host is left unhealthy",
+				Fix:      "add verify: (with verify_delay_seconds / verify_retries) so a bad mutation fails loudly in the same brokered call",
+			})
+		}
 		// SSH-SCRIPT-OPAQUE: the verb invokes a server-side script plan cannot
 		// inspect. This is ALLOWED (it's how existing daily scripts get wrapped
 		// without rewriting them into typed verbs) — but the approver owns the
@@ -570,6 +633,7 @@ func agentTargetCounts(allows []policy.Rule, effTargets []admin.SSHTarget) map[s
 func sshTargetSemEqual(a, b admin.SSHTarget) bool {
 	a = admin.NormalizeSSHTarget(a)
 	return a.Host == b.Host && a.User == b.User && a.Port == b.Port &&
+		a.Criticality == b.Criticality &&
 		a.IdentityFile == b.IdentityFile && a.ProxyJump == b.ProxyJump &&
 		strings.Join(a.AllowedServices, ",") == strings.Join(b.AllowedServices, ",") &&
 		strings.Join(a.AllowedPaths, ",") == strings.Join(b.AllowedPaths, ",") &&
@@ -744,7 +808,10 @@ func anyOf(items []string) string {
 
 // sshWrite is one (target, custom-verb) pair SSH-WRITE surfaces, with the verb's
 // description and the exact command it runs for the operator to confirm.
-type sshWrite struct{ alias, action, desc, cmdHint, command, scriptPath string }
+type sshWrite struct {
+	alias, action, desc, cmdHint, command, scriptPath string
+	hasVerify                                         bool
+}
 
 // scriptInvoked returns the absolute-path program a command template runs as its
 // first token — a server-side script/binary whose behavior plan cannot inspect —
@@ -866,13 +933,14 @@ func customSSHWrites(allows []policy.Rule, effTargets []admin.SSHTarget, defs ma
 			cmdHint = "; it runs: " + command
 		}
 		scriptPath := scriptInvoked(command)
+		hasVerify := strings.TrimSpace(action.Verify) != ""
 		for _, alias := range targetsForRule(r, effTargets) {
 			key := alias + "\x00" + r.Action
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, sshWrite{alias: alias, action: r.Action, desc: desc, cmdHint: cmdHint, command: command, scriptPath: scriptPath})
+			out = append(out, sshWrite{alias: alias, action: r.Action, desc: desc, cmdHint: cmdHint, command: command, scriptPath: scriptPath, hasVerify: hasVerify})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

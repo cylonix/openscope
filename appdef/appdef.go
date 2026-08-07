@@ -18,11 +18,11 @@ import (
 )
 
 type Definition struct {
-	Version      int               `yaml:"version"`
-	App          App               `yaml:"app"`
-	Actions      map[string]Action `yaml:"actions"`
-	Source       string            `yaml:"-"`
-	Bundled      bool              `yaml:"-"`
+	Version int               `yaml:"version"`
+	App     App               `yaml:"app"`
+	Actions map[string]Action `yaml:"actions"`
+	Source  string            `yaml:"-"`
+	Bundled bool              `yaml:"-"`
 	// RootApplied marks a definition that came from the root-owned applied-verb
 	// registry (<AdminDir>/app_definitions.yaml) — a human-reviewed, pinned
 	// command template a same-uid agent cannot rewrite. Set by LoadAppliedFile.
@@ -60,6 +60,30 @@ type Action struct {
 	// Command. The named local_source parameter is consumed by the stream, never
 	// substituted into the command, so the local path can't leak into it.
 	StdinFile string `yaml:"stdin_file"`
+	// StdinMedia declares what kind of artifact StdinFile streams, so the
+	// executor can inspect it BEFORE any remote mutation and fail closed on a
+	// wrong artifact. Currently: "docker-image" (a `docker save` tar, gzip ok) —
+	// the executor reads the embedded image config's os/architecture. Requires
+	// StdinFile.
+	StdinMedia string `yaml:"stdin_media,omitempty"`
+	// StdinPlatform pins the platform (os/arch, e.g. "linux/amd64") the streamed
+	// artifact must match. Requires StdinMedia. When empty, the executor falls
+	// back to the target's pinned facts (if probed); with neither, the artifact's
+	// detected platform is only reported, not enforced.
+	StdinPlatform string `yaml:"stdin_platform,omitempty"`
+	// Verify is a remote post-condition command run AFTER Command succeeds, with
+	// the same {param} substitution and quoting rules. If it fails (after
+	// VerifyRetries+1 attempts, each preceded by VerifyDelaySeconds), the whole
+	// action fails — turning a silent bad deploy (command exits 0 but the service
+	// is broken) into a loud, attributable error in the same brokered call.
+	Verify             string `yaml:"verify,omitempty"`
+	VerifyRetries      int    `yaml:"verify_retries,omitempty"`
+	VerifyDelaySeconds int    `yaml:"verify_delay_seconds,omitempty"`
+	// Impact is the author's declared blast radius: which services the action
+	// touches, the downtime expectation, and the rollback path. The reviewer
+	// approves the CLAIM; the planner's effect calculus cross-checks it against
+	// the command and flags omissions (SSH-IMPACT-MISMATCH).
+	Impact *Impact `yaml:"impact,omitempty"`
 	// RootApplied marks an action whose command template came from the root-owned
 	// applied-verb registry (a same-uid agent cannot rewrite it). Provenance is
 	// tracked PER ACTION, not per app: an apps.d verb merged onto a namespace that
@@ -67,6 +91,13 @@ type Action struct {
 	// LoadAppliedFile; the system executor refuses to run a privileged command
 	// template whose action is not RootApplied. yaml:"-" so it is never declared.
 	RootApplied bool `yaml:"-"`
+}
+
+// Impact is an action's declared blast radius (see Action.Impact).
+type Impact struct {
+	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
+	Downtime string   `yaml:"downtime,omitempty" json:"downtime,omitempty"` // none | momentary | outage
+	Rollback string   `yaml:"rollback,omitempty" json:"rollback,omitempty"`
 }
 
 type Parameter struct {
@@ -201,9 +232,10 @@ func (d *Definition) Validate() error {
 			}
 			declared[param.Name] = struct{}{}
 		}
-		// Every {placeholder} in the command/stdin template must name a declared
-		// parameter — otherwise it would silently substitute to the empty string.
-		for _, tmpl := range []string{action.Command, action.Stdin} {
+		// Every {placeholder} in the command/stdin/verify template must name a
+		// declared parameter — otherwise it would silently substitute to the
+		// empty string.
+		for _, tmpl := range []string{action.Command, action.Stdin, action.Verify} {
 			for _, ref := range referencedParams(tmpl) {
 				if _, ok := declared[ref]; !ok {
 					return fmt.Errorf("action %q template references undeclared parameter %q", name, ref)
@@ -213,8 +245,43 @@ func (d *Definition) Validate() error {
 		if err := validateStdinFile(name, action); err != nil {
 			return err
 		}
+		if err := validateVerify(name, action); err != nil {
+			return err
+		}
+		if im := action.Impact; im != nil {
+			switch im.Downtime {
+			case "", "none", "momentary", "outage":
+			default:
+				return fmt.Errorf("action %q: impact.downtime must be none, momentary, or outage, got %q", name, im.Downtime)
+			}
+			for _, s := range im.Services {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("action %q: impact.services entries must not be empty", name)
+				}
+			}
+		}
 	}
 
+	return nil
+}
+
+// validateVerify enforces the post-condition contract: verify is a remote
+// command, so it needs a command-template action to follow, and its retry knobs
+// must stay in a range that cannot stall the daemon.
+func validateVerify(name string, action Action) error {
+	hasVerify := strings.TrimSpace(action.Verify) != ""
+	if !hasVerify && (action.VerifyRetries != 0 || action.VerifyDelaySeconds != 0) {
+		return fmt.Errorf("action %q: verify_retries/verify_delay_seconds require a verify command", name)
+	}
+	if hasVerify && strings.TrimSpace(action.Command) == "" {
+		return fmt.Errorf("action %q: verify requires a command to verify", name)
+	}
+	if action.VerifyRetries < 0 || action.VerifyRetries > 10 {
+		return fmt.Errorf("action %q: verify_retries must be between 0 and 10", name)
+	}
+	if action.VerifyDelaySeconds < 0 || action.VerifyDelaySeconds > 300 {
+		return fmt.Errorf("action %q: verify_delay_seconds must be between 0 and 300", name)
+	}
 	return nil
 }
 
@@ -232,16 +299,36 @@ func validateStdinFile(name string, action Action) error {
 		if strings.TrimSpace(action.StdinFile) != p.Name {
 			return fmt.Errorf("action %q: parameter %q (constraint: local_source) must be consumed by stdin_file", name, p.Name)
 		}
-		for _, tmpl := range []string{action.Command, action.Stdin} {
+		for _, tmpl := range []string{action.Command, action.Stdin, action.Verify} {
 			if slices.Contains(referencedParams(tmpl), p.Name) {
-				return fmt.Errorf("action %q: local_source parameter %q must not appear in the command/stdin template", name, p.Name)
+				return fmt.Errorf("action %q: local_source parameter %q must not appear in the command/stdin/verify template", name, p.Name)
 			}
 		}
 	}
 
 	sf := strings.TrimSpace(action.StdinFile)
 	if sf == "" {
+		if action.StdinMedia != "" {
+			return fmt.Errorf("action %q: stdin_media requires stdin_file", name)
+		}
+		if action.StdinPlatform != "" {
+			return fmt.Errorf("action %q: stdin_platform requires stdin_media", name)
+		}
 		return nil
+	}
+	switch action.StdinMedia {
+	case "", "docker-image":
+	default:
+		return fmt.Errorf("action %q: unknown stdin_media %q (want docker-image)", name, action.StdinMedia)
+	}
+	if action.StdinPlatform != "" {
+		if action.StdinMedia == "" {
+			return fmt.Errorf("action %q: stdin_platform requires stdin_media", name)
+		}
+		parts := strings.Split(action.StdinPlatform, "/")
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return fmt.Errorf("action %q: stdin_platform must be os/arch (e.g. linux/amd64), got %q", name, action.StdinPlatform)
+		}
 	}
 	if strings.TrimSpace(action.Stdin) != "" {
 		return fmt.Errorf("action %q: stdin_file and stdin are mutually exclusive", name)

@@ -24,6 +24,9 @@ type JSONView struct {
 	Findings     []JSONFinding  `json:"findings"`
 	Bounds       []BoundsResult `json:"bounds"`
 	Capabilities []Capability   `json:"capabilities"`
+	VerbDiffs    []VerbDiff     `json:"verb_replacements,omitempty"`
+	VerbEffects  []VerbEffects  `json:"verb_effects,omitempty"`
+	VerbHistory  []VerbHistory  `json:"verb_history,omitempty"`
 }
 
 func (p Plan) JSON() JSONView {
@@ -35,6 +38,9 @@ func (p Plan) JSON() JSONView {
 		AckCount:     len(p.Acknowledge),
 		Bounds:       p.BoundsTable,
 		Capabilities: p.Capabilities,
+		VerbDiffs:    p.VerbDiffs,
+		VerbEffects:  p.VerbEffects,
+		VerbHistory:  p.VerbHistories,
 	}
 	switch {
 	case p.Blocked:

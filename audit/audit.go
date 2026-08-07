@@ -63,6 +63,79 @@ func EnsureWritable(path string) error {
 	return file.Close()
 }
 
+// Outcome is one recorded execution of an app·action, reduced to what risk
+// review needs: did it run, did it work, and why not.
+type Outcome struct {
+	Timestamp time.Time `json:"ts"`
+	Result    string    `json:"result"` // success | executor_error | executor_failure | ...
+	Reason    string    `json:"reason,omitempty"`
+}
+
+// Failed reports whether the run reached the executor and went wrong — the
+// signal that predicts the next run better than any static analysis.
+func (o Outcome) Failed() bool {
+	return o.Result == "executor_error" || o.Result == "executor_failure"
+}
+
+// RecentOutcomes scans the JSONL audit log and returns, per "app·action", the
+// most recent EXECUTED outcomes (decision allow), newest first, capped at max
+// per key. Denied requests are policy working as intended, not run history, so
+// they are excluded. Reads best-effort: a malformed line is skipped, a missing
+// file returns an empty map — plan runs as the user and the log may be
+// root-owned; callers treat absence as "no history", never as an error to
+// surface.
+func RecentOutcomes(path string, max int) (map[string][]Outcome, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]Outcome{}
+	for _, line := range splitJSONL(data) {
+		var ev Event
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if ev.Decision != "allow" || ev.App == "" || ev.Action == "" {
+			continue
+		}
+		switch ev.Result {
+		case "success", "executor_error", "executor_failure":
+		default:
+			continue // bypass inspections, filter errors, etc. are not run history
+		}
+		key := ev.App + "·" + ev.Action
+		out[key] = append(out[key], Outcome{Timestamp: ev.Timestamp, Result: ev.Result, Reason: ev.Reason})
+	}
+	// Newest first, capped per key (the file is append-ordered oldest first).
+	for key, list := range out {
+		for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+			list[i], list[j] = list[j], list[i]
+		}
+		if len(list) > max {
+			list = list[:max]
+		}
+		out[key] = list
+	}
+	return out, nil
+}
+
+func splitJSONL(data []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			if i > start {
+				lines = append(lines, data[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		lines = append(lines, data[start:])
+	}
+	return lines
+}
+
 func Append(path string, event Event) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openscope/openscope/admin"
 	"github.com/openscope/openscope/appdef"
@@ -185,10 +186,32 @@ func (e Executor) runCommandAction(def appdef.Definition, target admin.SSHTarget
 	// stdin source: either a local file streamed straight through (stdin_file,
 	// for large artifacts like a docker image tar), or a rendered string.
 	var stdin io.Reader
+	artifactPlatform := ""
 	if sf := strings.TrimSpace(action.StdinFile); sf != "" {
 		src, err := requireAllowedUploadSource(target, params[sf])
 		if err != nil {
 			return nil, err
+		}
+		// Typed artifact gate: inspect the staged artifact BEFORE any remote
+		// mutation and fail closed on a mismatch — a wrong-architecture image
+		// must die here, on the broker host, not as a crash-looping container.
+		if action.StdinMedia == "docker-image" {
+			detected, err := dockerImagePlatform(src)
+			if err != nil {
+				return nil, fmt.Errorf("inspect docker image artifact %s: %w", src, err)
+			}
+			expected := strings.TrimSpace(action.StdinPlatform)
+			expectedFrom := "the verb's stdin_platform"
+			if expected == "" && target.Facts != nil {
+				expected = target.Facts.Platform()
+				expectedFrom = "target " + target.Alias + "'s pinned facts"
+			}
+			if expected != "" && detected != expected {
+				return nil, fmt.Errorf(
+					"refusing to stream %s: artifact is a %s docker image but %s requires %s — rebuild with `docker build --platform %s`",
+					filepath.Base(src), detected, expectedFrom, expected, expected)
+			}
+			artifactPlatform = detected
 		}
 		f, err := os.Open(src)
 		if err != nil {
@@ -204,15 +227,52 @@ func (e Executor) runCommandAction(def appdef.Definition, target admin.SSHTarget
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"target": target.Alias,
 		"action": actionName,
 		"output": strings.TrimRight(stdout, "\n"),
-	}, nil
+	}
+	if artifactPlatform != "" {
+		payload["artifact_platform"] = artifactPlatform
+	}
+
+	// Post-condition: the command exiting 0 is not the same as the host being
+	// healthy (a recreated container can be "Up" and crash-loop seconds later).
+	// verify runs after the mutation, with settle delay and retries, and a
+	// failure fails the WHOLE action so a bad deploy is loud in the same call.
+	if v := strings.TrimSpace(action.Verify); v != "" {
+		verifyCmd := substitute(v, subs)
+		attempts := action.VerifyRetries + 1
+		delay := time.Duration(action.VerifyDelaySeconds) * time.Second
+		var vout string
+		var verr error
+		for i := 0; i < attempts; i++ {
+			if delay > 0 {
+				sleepFn(delay)
+			}
+			vout, verr = e.runRemote(target, nil, verifyCmd)
+			if verr == nil {
+				break
+			}
+		}
+		if verr != nil {
+			return nil, fmt.Errorf(
+				"action %q: command succeeded but verify failed after %d attempt(s): %v — the mutation IS applied on %s and is NOT healthy; command output:\n%s",
+				actionName, attempts, verr, target.Alias, strings.TrimRight(stdout, "\n"))
+		}
+		payload["verify"] = "ok"
+		if s := strings.TrimSpace(vout); s != "" {
+			payload["verify_output"] = s
+		}
+	}
+	return payload, nil
 }
 
+// sleepFn is time.Sleep, indirected so tests can run retry loops instantly.
+var sleepFn = time.Sleep
+
 func (e Executor) checkHost(target admin.SSHTarget) (map[string]any, error) {
-	stdout, err := e.runSSH(target, "printf '%s\\n' \"$(hostname)\" \"$(whoami)\" \"$(id -u)\" \"$(uname -s)\" \"$(uname -r)\"")
+	stdout, err := e.runSSH(target, "printf '%s\\n' \"$(hostname)\" \"$(whoami)\" \"$(id -u)\" \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\"")
 	if err != nil {
 		return nil, err
 	}
@@ -220,14 +280,58 @@ func (e Executor) checkHost(target admin.SSHTarget) (map[string]any, error) {
 	if len(lines) < 5 {
 		return nil, fmt.Errorf("unexpected check_host output")
 	}
-	return map[string]any{
+	out := map[string]any{
 		"target":   target.Alias,
 		"hostname": lines[0],
 		"user":     lines[1],
 		"uid":      lines[2],
 		"os":       lines[3],
 		"release":  lines[4],
-	}, nil
+	}
+	if len(lines) >= 6 {
+		out["arch"] = lines[5]
+	}
+	return out, nil
+}
+
+// ProbeFacts collects best-effort host observations for pinning on the target
+// record (see admin.TargetFacts). Prefix markers keep the parse stable when a
+// probe half is absent (no docker on the host → empty value, not a shifted
+// line). Never fails on a missing tool — only on an unreachable host.
+func (e Executor) ProbeFacts(target admin.SSHTarget) (admin.TargetFacts, error) {
+	stdout, err := e.runSSH(target,
+		`printf 'OS=%s\nARCH=%s\nDOCKER=%s\nCOMPOSE=%s\nCONTAINERS=%s\n' "$(uname -s)" "$(uname -m)" "$(docker --version 2>/dev/null | head -n1)" "$(docker-compose --version 2>/dev/null | head -n1)" "$(docker ps --format '{{.Names}}' 2>/dev/null | tr '\n' ',')"`)
+	if err != nil {
+		return admin.TargetFacts{}, err
+	}
+	facts := admin.TargetFacts{ProbedAt: time.Now().UTC().Format(time.RFC3339)}
+	for _, line := range splitLines(stdout) {
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch key {
+		case "OS":
+			facts.OS = val
+		case "ARCH":
+			facts.Arch = val
+		case "DOCKER":
+			facts.Docker = val
+		case "COMPOSE":
+			facts.Compose = val
+		case "CONTAINERS":
+			for _, name := range strings.Split(val, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					facts.Containers = append(facts.Containers, name)
+				}
+			}
+		}
+	}
+	if facts.OS == "" && facts.Arch == "" {
+		return admin.TargetFacts{}, fmt.Errorf("probe returned no facts")
+	}
+	return facts, nil
 }
 
 func (e Executor) serviceStatus(target admin.SSHTarget, service string) (map[string]any, error) {

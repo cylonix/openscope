@@ -41,22 +41,97 @@ func RenderText(p Plan) string {
 	if c.SystemFirstWrite {
 		sysCell = "first write (was empty)"
 	}
+	verbCell := fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded)
+	if c.VerbsReplaced > 0 {
+		verbCell = fmt.Sprintf("+%d defined — %d REPLACE existing approved command(s)", c.VerbsAdded, c.VerbsReplaced)
+	}
 	b.WriteString(table(
 		[]string{"AREA", "CHANGE"},
 		[][]string{
 			{"ssh targets", fmt.Sprintf("+%d add, -%d remove", c.SSHTargetsAdded, c.SSHTargetsRemoved)},
 			{"system allow-lists", fmt.Sprintf("%s — %d mgrs · %d pkgs · %d svcs · %d procs · %d ports",
 				sysCell, c.NewManagers, c.NewPackages, c.NewServices, c.NewProcNames, c.NewPorts)},
-			{"custom verbs", fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded)},
+			{"custom verbs", verbCell},
 			{"policy rules", fmt.Sprintf("+%d allow, +%d deny (new vs live)", c.PolicyAllowNew, c.PolicyDenyNew)},
 		}, 1, 60))
-	b.WriteString("  This proposal only ADDS access; nothing is narrowed or removed.\n\n")
+	if c.VerbsReplaced > 0 {
+		fmt.Fprintf(&b, "  This proposal ADDS access and REPLACES %d approved verb command(s) — review the diff below.\n\n", c.VerbsReplaced)
+	} else {
+		b.WriteString("  This proposal only ADDS access; nothing is narrowed or removed.\n\n")
+	}
 
 	// Custom verbs: show the EXACT command template + constraints, so the
 	// operator confirms what each new verb runs — pinned root-owned at apply.
-	if vrows := verbRows(pr); len(vrows) > 0 {
+	if vrows := verbRows(pr, replacedSet(p.VerbDiffs)); len(vrows) > 0 {
 		b.WriteString(section("CUSTOM VERBS ADDED (exact command templates, pinned root-owned at apply)"))
-		b.WriteString(table([]string{"APP·ACTION", "COMMAND", "PARAMS"}, vrows, 1, 50))
+		b.WriteString(table([]string{"APP·ACTION", "STATUS", "COMMAND", "VERIFY", "PARAMS"}, vrows, 2, 44))
+		b.WriteString("\n")
+	}
+
+	// Verb replacements: the old approved template next to the proposed one, so
+	// re-review reads the changed clause instead of re-eyeballing the whole
+	// command (which is how repeat review errors happen).
+	if len(p.VerbDiffs) > 0 {
+		b.WriteString(section("VERB REPLACEMENTS (old approved → proposed)"))
+		for _, d := range p.VerbDiffs {
+			fmt.Fprintf(&b, "  %s\n", d.AppAction)
+			fmt.Fprintf(&b, "    - old command: %s\n", dash(d.OldCommand))
+			fmt.Fprintf(&b, "    + new command: %s\n", dash(d.NewCommand))
+			if d.OldVerify != d.NewVerify {
+				fmt.Fprintf(&b, "    - old verify:  %s\n", dash(d.OldVerify))
+				fmt.Fprintf(&b, "    + new verify:  %s\n", dash(d.NewVerify))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Derived effects: what each verb touches, what a mid-chain failure
+	// strands, who else shares the host, and the author's declared impact.
+	// This is the blast-radius view — authority says what it MAY touch; this
+	// bounds what it WILL touch and what a partial failure leaves behind.
+	if len(p.VerbEffects) > 0 {
+		b.WriteString(section("DERIVED EFFECTS & BLAST RADIUS (advisory — from command templates + pinned facts)"))
+		for _, ve := range p.VerbEffects {
+			header := "  " + ve.AppAction
+			if len(ve.Targets) > 0 {
+				header += "  → targets: " + strings.Join(ve.Targets, ", ")
+			}
+			if ve.Criticality != "" {
+				header += "  [" + ve.Criticality + "]"
+			}
+			b.WriteString(header + "\n")
+			for _, e := range ve.Effects {
+				obj := e.Object
+				if obj != "" {
+					obj = ": " + obj
+				}
+				fmt.Fprintf(&b, "    %d. %-34s %s\n", e.Step, e.Class+obj, truncate(e.Command, 52))
+			}
+			for _, w := range ve.FailureWalk {
+				fmt.Fprintf(&b, "    ⚠ %s\n", w)
+			}
+			if ve.Impact != "" {
+				fmt.Fprintf(&b, "    impact: %s\n", ve.Impact)
+			}
+			for _, ct := range ve.CoTenants {
+				fmt.Fprintf(&b, "    host also runs — %s\n", ct)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Verb history: what happened the last times these verbs actually ran.
+	if len(p.VerbHistories) > 0 {
+		b.WriteString(section("VERB HISTORY (recent recorded runs from the audit log)"))
+		hRows := make([][]string, 0, len(p.VerbHistories))
+		for _, h := range p.VerbHistories {
+			last := h.LastResult
+			if h.LastAt != "" {
+				last += " @ " + h.LastAt
+			}
+			hRows = append(hRows, []string{h.AppAction, fmt.Sprintf("%d run(s), %d failed", h.Total, h.Failures), last})
+		}
+		b.WriteString(table([]string{"APP·ACTION", "RECENT", "LAST RESULT"}, hRows, 2, 44))
 		b.WriteString("\n")
 	}
 
@@ -184,7 +259,11 @@ func section(title string) string {
 func untrustedBox(m Metadata) string {
 	var b strings.Builder
 	b.WriteString("  ┌─ AI-AUTHORED METADATA — untrusted, NOT used in the review below ─┐\n")
-	fmt.Fprintf(&b, "  │ tool %s · model %s · session %s\n", dash(m.AuthoredBy.Tool), dash(m.AuthoredBy.Model), dash(m.AuthoredBy.Session))
+	stamp := ""
+	if strings.TrimSpace(m.AuthoredBy.Tool) == "" && strings.TrimSpace(m.AuthoredBy.Model) == "" && strings.TrimSpace(m.AuthoredBy.Session) == "" {
+		stamp = "  (UNSTAMPED — fill metadata.authored_by so the audit trail can tie this to its session)"
+	}
+	fmt.Fprintf(&b, "  │ tool %s · model %s · session %s%s\n", dash(m.AuthoredBy.Tool), dash(m.AuthoredBy.Model), dash(m.AuthoredBy.Session), stamp)
 	desc := strings.Join(strings.Fields(m.Description), " ")
 	for _, line := range wrap(desc, 62) {
 		fmt.Fprintf(&b, "  │ %s\n", line)
@@ -273,13 +352,31 @@ func table(headers []string, rows [][]string, wrapCol, wrapWidth int) string {
 			b.WriteString("\n")
 		}
 	}
+	// When any row wraps to multiple physical lines, fence EVERY row with a
+	// separator: a wrapped cell's last line must never read as continuing into
+	// the next row, and a partially copied table still ends on a border.
+	// Single-line tables keep the compact style.
+	multiline := false
+	if wrapCol >= 0 && wrapCol < cols {
+		for _, row := range rows {
+			if wrapCol < len(row) && len(wrap(row[wrapCol], wrapWidth)) > 1 {
+				multiline = true
+				break
+			}
+		}
+	}
 	sep()
 	writeRow(headers)
 	sep()
 	for _, row := range rows {
 		writeRow(row)
+		if multiline {
+			sep()
+		}
 	}
-	sep()
+	if !multiline {
+		sep()
+	}
 	return b.String()
 }
 

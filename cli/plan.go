@@ -253,6 +253,7 @@ func runPlan(paths config.Paths, args []string) int {
 	if flags["skip-bypass-check"] != "true" {
 		runLiveBypass(paths, &plan)
 	}
+	applyVerbHistory(paths, &plan)
 
 	switch {
 	case flags["json"] == "true":
@@ -362,6 +363,7 @@ func runApply(paths config.Paths, args []string) int {
 	} else {
 		runLiveBypass(paths, &plan)
 	}
+	applyVerbHistory(paths, &plan)
 
 	// apply runs the SAME plan as `openscope plan` and refuses unless it passes —
 	// there is no flag to apply an un-planned or blocked proposal. Re-rendering
@@ -393,6 +395,13 @@ func runApply(paths config.Paths, args []string) int {
 		return daemon.ExitExecutorError
 	}
 
+	// Pin host facts for the proposed targets while we are online and root —
+	// os/arch and docker versions ground future plans (hazard escalation) and
+	// executor artifact gates in the host's reality. Best-effort: an
+	// unreachable host skips its facts, never fails the apply. Re-proposing a
+	// target is the supported way to refresh its facts.
+	pinTargetFacts(paths, p.SSHTargets.Add)
+
 	if err := writeAttestation(paths, p); err != nil {
 		output.WriteErrorf("apply: write attestation: %v", err)
 		return daemon.ExitConfigError
@@ -421,9 +430,16 @@ func confirmAcknowledgements(findings []proposal.Finding) error {
 	reader := bufio.NewReader(tty)
 	for i, f := range findings {
 		// Echo the EXACT string to type — "the resource name" alone left people
-		// hunting for which token on the header line they had to enter.
-		fmt.Fprintf(tty, "\n[%d/%d] HIGH %s — %s\n  %s\n  To confirm, type exactly:  %s\n  (blank aborts) > ",
-			i+1, len(findings), f.RuleID, f.Resource, f.Summary, f.Resource)
+		// hunting for which token on the header line they had to enter. The Fix
+		// text prints too: for SSH-WRITE it carries the reviewer checklist
+		// (mid-chain failure state / verify / rollback), and acknowledgment is
+		// the moment that checklist must be in front of the operator.
+		fix := ""
+		if strings.TrimSpace(f.Fix) != "" {
+			fix = "\n  " + f.Fix
+		}
+		fmt.Fprintf(tty, "\n[%d/%d] HIGH %s — %s\n  %s%s\n  To confirm, type exactly:  %s\n  (blank aborts) > ",
+			i+1, len(findings), f.RuleID, f.Resource, f.Summary, fix, f.Resource)
 		line, _ := reader.ReadString('\n')
 		if strings.TrimSpace(line) != strings.TrimSpace(f.Resource) {
 			return fmt.Errorf("confirmation for %q did not match", f.Resource)
@@ -568,8 +584,68 @@ func mustLoadTargets(paths config.Paths) admin.SSHTargets {
 	return t
 }
 
+// applyVerbHistory folds recent audit-log outcomes for the proposal's verbs
+// into the plan. Best-effort: at plan-as-user the root-owned log may be
+// unreadable — that is "no history available", never an error.
+func applyVerbHistory(paths config.Paths, plan *proposal.Plan) {
+	outcomes, err := audit.RecentOutcomes(paths.AuditFile, 5)
+	if err != nil {
+		return
+	}
+	plan.ApplyVerbHistory(outcomes)
+}
+
+// factsRunner overrides the ssh runner pinTargetFacts probes with; nil selects
+// the default os/exec runner. Tests set it to avoid real network.
+var factsRunner sshexec.CommandRunner
+
+// pinTargetFacts probes each proposed target (freshly added, or an equal
+// re-add — the refresh path) and records host facts on its stored record.
+// Best-effort by design: probing must never fail an apply, only skip.
+func pinTargetFacts(paths config.Paths, proposed []admin.SSHTarget) {
+	if len(proposed) == 0 {
+		return
+	}
+	exec := sshexec.Executor{Paths: paths, Runner: factsRunner}
+	targets, err := admin.LoadSSHTargetsOrDefault(paths)
+	if err != nil {
+		return
+	}
+	changed := false
+	for _, pt := range proposed {
+		stored, ok := admin.FindSSHTarget(targets, pt.Alias)
+		if !ok {
+			continue
+		}
+		facts, err := exec.ProbeFacts(stored)
+		if err != nil {
+			fmt.Printf("==> facts: probe %s failed (%v) — not pinned; re-propose the target to retry\n", pt.Alias, err)
+			continue
+		}
+		for i := range targets.Targets {
+			if targets.Targets[i].Alias == pt.Alias {
+				targets.Targets[i].Facts = &facts
+				changed = true
+			}
+		}
+		detail := facts.Platform()
+		for _, extra := range []string{facts.Docker, facts.Compose} {
+			if extra != "" {
+				detail += " · " + extra
+			}
+		}
+		fmt.Printf("==> facts: pinned %s — %s\n", pt.Alias, detail)
+	}
+	if changed {
+		if err := admin.SaveDefaultSSHTargets(paths, targets); err != nil {
+			fmt.Printf("==> facts: save failed: %v\n", err)
+		}
+	}
+}
+
 func sshTargetEqual(a, b admin.SSHTarget) bool {
 	return a.Host == b.Host && a.User == b.User && a.Port == b.Port &&
+		a.Criticality == b.Criticality &&
 		a.IdentityFile == b.IdentityFile && a.ProxyJump == b.ProxyJump &&
 		strings.Join(a.AllowedServices, ",") == strings.Join(b.AllowedServices, ",") &&
 		strings.Join(a.AllowedPaths, ",") == strings.Join(b.AllowedPaths, ",") &&

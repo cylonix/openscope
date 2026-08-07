@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/openscope/openscope/appdef"
+	"github.com/openscope/openscope/audit"
 	"github.com/openscope/openscope/executor/sshexec"
 	"github.com/openscope/openscope/policy"
 )
@@ -37,6 +39,7 @@ type Changes struct {
 	NewProcNames      int
 	NewPorts          int
 	VerbsAdded        int
+	VerbsReplaced     int
 	PolicyAllowNew    int
 	PolicyDenyNew     int
 }
@@ -65,8 +68,29 @@ type Plan struct {
 	Capabilities []Capability
 	Changes      Changes
 	BoundsTable  []BoundsResult
+	// VerbDiffs are proposed actions that REPLACE an existing definition —
+	// rendered as an old → new diff so re-review reads the changed clause, not
+	// the whole template.
+	VerbDiffs []VerbDiff
+	// VerbEffects are the per-verb consequence summaries derived from command
+	// templates (effect chain, failure walk, co-tenants, declared impact).
+	VerbEffects []VerbEffects
+	// VerbHistories are recent audit-log outcomes for the verbs this proposal
+	// grants — filled by the CLI via ApplyVerbHistory (the log may be
+	// root-owned, so plan-as-user may not be able to read it).
+	VerbHistories []VerbHistory
 
 	Blocked bool
+}
+
+// VerbHistory summarizes the recent recorded runs of one app·action.
+type VerbHistory struct {
+	AppAction  string `json:"app_action"`
+	Total      int    `json:"total"`
+	Failures   int    `json:"failures"`
+	LastResult string `json:"last_result"`
+	LastReason string `json:"last_reason,omitempty"`
+	LastAt     string `json:"last_at,omitempty"`
 }
 
 func BuildPlan(p Proposal, live LiveState, defs map[string]appdef.Definition, b Bounds, boundsSource string, machine MachineInfo) Plan {
@@ -89,8 +113,72 @@ func BuildPlan(p Proposal, live LiveState, defs map[string]appdef.Definition, b 
 
 	plan.Capabilities = capabilities(p)
 	plan.Changes = changes(p, live)
+	plan.VerbDiffs = verbDiffs(p, defs)
+	plan.Changes.VerbsReplaced = len(plan.VerbDiffs)
+	plan.VerbEffects = verbEffects(p, allowRules(p.Policy.Add), p.effectiveTargets(live.SSHTargets))
 	plan.BoundsTable = boundsTable(b, findings)
 	return plan
+}
+
+// ApplyVerbHistory folds the audit log's recent outcomes into the plan for the
+// verbs this proposal defines or grants — the CLI supplies them (like the
+// bypass probe) because the root-owned log may be unreadable at plan-as-user.
+// A verb whose most recent run failed gets a WARN: the past run is the
+// cheapest, most honest risk predictor there is.
+func (p *Plan) ApplyVerbHistory(outcomes map[string][]audit.Outcome) {
+	for _, key := range proposalVerbKeys(p.Proposal) {
+		list := outcomes[key]
+		if len(list) == 0 {
+			continue
+		}
+		h := VerbHistory{
+			AppAction:  key,
+			Total:      len(list),
+			LastResult: list[0].Result,
+			LastReason: list[0].Reason,
+			LastAt:     list[0].Timestamp.UTC().Format(time.RFC3339),
+		}
+		for _, o := range list {
+			if o.Failed() {
+				h.Failures++
+			}
+		}
+		p.VerbHistories = append(p.VerbHistories, h)
+		if list[0].Failed() {
+			p.Findings = append(p.Findings, Finding{
+				RuleID: "SSH-VERB-HISTORY", Severity: SevWarn,
+				Resource: key,
+				Summary: fmt.Sprintf("the LAST recorded run of this verb FAILED (%s: %s) — %d of its last %d run(s) failed",
+					list[0].Result, truncate(list[0].Reason, 90), h.Failures, h.Total),
+				Fix: "understand the previous failure before granting/running again; the audit log holds the full reason",
+			})
+		}
+	}
+	sort.SliceStable(p.Findings, func(i, j int) bool { return p.Findings[i].Severity > p.Findings[j].Severity })
+}
+
+// proposalVerbKeys returns the "app·action" keys this proposal defines
+// (apps.add) or grants (policy.add allow rules), deduped and sorted.
+func proposalVerbKeys(p Proposal) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(key string) {
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	for _, d := range p.Apps.Add {
+		for name := range d.Actions {
+			add(d.App.Name + "·" + name)
+		}
+	}
+	for _, r := range allowRules(p.Policy.Add) {
+		add(r.App + "·" + r.Action)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ApplyBypassResults folds a live parallel-path probe (run by the CLI — plan
@@ -249,11 +337,13 @@ func capabilities(p Proposal) []Capability {
 	return caps
 }
 
-// verbRows returns the custom verbs a proposal adds as [app·action, command,
-// params] rows, sorted, for the plan's "custom verbs" section. The command is
-// the exact template the operator is authorizing; params show each name and its
-// constraint (path/service) so the scope is visible alongside the command.
-func verbRows(p Proposal) [][]string {
+// verbRows returns the custom verbs a proposal adds as [app·action, status,
+// command, params] rows, sorted, for the plan's "custom verbs" section. The
+// command is the exact template the operator is authorizing; params show each
+// name and its constraint (path/service) so the scope is visible alongside the
+// command. replaced marks actions that overwrite an existing definition — those
+// read "REPLACES" so a rewrite of an approved verb can't render like a new one.
+func verbRows(p Proposal, replaced map[string]bool) [][]string {
 	var rows [][]string
 	for _, d := range p.Apps.Add {
 		names := make([]string, 0, len(d.Actions))
@@ -271,11 +361,38 @@ func verbRows(p Proposal) [][]string {
 				}
 				parts = append(parts, s)
 			}
-			rows = append(rows, []string{d.App.Name + "·" + name, a.Command, strings.Join(parts, ", ")})
+			key := d.App.Name + "·" + name
+			status := "new"
+			if replaced[key] {
+				status = "REPLACES"
+			}
+			verify := strings.TrimSpace(a.Verify)
+			if verify == "" {
+				verify = "—"
+			}
+			rows = append(rows, []string{key, status, a.Command, verify, strings.Join(parts, ", ")})
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
 	return rows
+}
+
+// verbChangeCell renders the "custom verbs" changes cell, calling out how many
+// of the added definitions replace an existing approved command.
+func verbChangeCell(c Changes) string {
+	if c.VerbsReplaced > 0 {
+		return fmt.Sprintf("+%d defined — %d REPLACE existing approved command(s)", c.VerbsAdded, c.VerbsReplaced)
+	}
+	return fmt.Sprintf("+%d defined (command templates)", c.VerbsAdded)
+}
+
+// replacedSet keys the plan's verb diffs by app·action for the verbs table.
+func replacedSet(diffs []VerbDiff) map[string]bool {
+	out := make(map[string]bool, len(diffs))
+	for _, d := range diffs {
+		out[d.AppAction] = true
+	}
+	return out
 }
 
 func scopeString(r policy.Rule) string {

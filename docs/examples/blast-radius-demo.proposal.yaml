@@ -1,0 +1,69 @@
+# blast-radius-demo.proposal.yaml — exercises every consequence-review feature
+# of `openscope plan` in one file. Run it read-only (nothing is written):
+#
+#   openscope plan --file docs/examples/blast-radius-demo.proposal.yaml --skip-bypass-check
+#
+# What each part triggers:
+#   - criticality: prod         → SSH-PROD-WRITE (typed ack) + [prod] tag in the
+#                                 effects header; a missing verify: would rise
+#                                 from WARN to MEDIUM on this tier
+#   - stop && rm && up chain    → DERIVED EFFECTS chain + failure walk
+#                                 ("if step N fails → container left STOPPED /
+#                                 DELETED") + SSH-OPS-HAZARD down-window note
+#   - restart of "traefik"      → fronting-proxy hazard (names co-tenants when
+#                                 the target has pinned `facts.containers`)
+#   - impact: {services: [demo-web], ...}
+#                               → rendered under the effects; the traefik step
+#                                 is NOT declared, so SSH-IMPACT-MISMATCH fires
+#   - stdin_media/stdin_platform→ the executor would refuse a non-amd64 image
+#                                 tar before any remote mutation
+#   - verify: + retries/delay   → clears SSH-WRITE-NO-VERIFY; a failed verify
+#                                 fails the whole brokered call
+#   - re-proposing an action name that already exists in the applied registry
+#     with a DIFFERENT command → VERB-REPLACES-APPROVED + old→new diff
+#     (edit the command below after one apply to see it)
+#   - after real runs, VERB HISTORY shows recent audit outcomes; a failed last
+#     run adds SSH-VERB-HISTORY
+#
+# The metadata block is stamped — delete authored_by to see META-UNSTAMPED.
+
+kind: openscope-proposal
+version: 1
+metadata:
+  name: blast-radius-demo
+  description: demo of consequence-scoped plan review (effects, failure walk, tiers, impact)
+  authored_by: {tool: claude-code, model: fable-5, session: demo}
+
+ssh_targets:
+  add:
+    - alias: demo-origin
+      host: demo.invalid
+      user: deploy
+      identity_file: /var/openscope/ssh/default/id_rsa
+      criticality: prod
+
+apps:
+  add:
+    - version: 1
+      app: {name: ssh, executor: ssh}
+      actions:
+        deploy_demo_web:
+          description: deploy the demo web container and bounce the proxy
+          stdin_file: image
+          stdin_media: docker-image
+          stdin_platform: linux/amd64
+          command: "docker load && cd /root && docker-compose stop demo-web && docker-compose rm -f demo-web && docker-compose up -d demo-web && docker-compose restart traefik && docker-compose ps demo-web"
+          verify: "sleep 5 && curl -sf localhost:8003/"
+          verify_retries: 2
+          verify_delay_seconds: 5
+          impact:
+            services: [demo-web]
+            downtime: momentary
+            rollback: "re-run with the previously staged image tar"
+          parameters:
+            - {name: target, type: string, policy_key: target}
+            - {name: image, type: string, constraint: local_source}
+
+policy:
+  add:
+    - {effect: allow, agent: claude-code, app: ssh, action: deploy_demo_web, constraints: {target: demo-origin}}
