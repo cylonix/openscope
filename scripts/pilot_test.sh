@@ -91,7 +91,10 @@ run_test() {  # name expect_exit cmd [args...]
 }
 
 contains_deny_reason() {
-  echo "$1" | grep -qiE "denied|no matching allow|unregistered|not registered|protected|blacklist"
+  # "missing bearer token" is the HTTP listener's fail-closed refusal of an
+  # unauthenticated client — for the unauthenticated HTTP probe that IS the
+  # correct denial (mint a token to test the authenticated path).
+  echo "$1" | grep -qiE "denied|no matching allow|unregistered|not registered|protected|blacklist|missing bearer token"
 }
 
 contains_transport_failure() {
@@ -215,16 +218,21 @@ else
   print_status FAIL "asapple present" "not found"
 fi
 
-# 1.4 LaunchAgent plist installed and loaded
-PLIST="$HOME/Library/LaunchAgents/com.ezblock.openscope.openscoped.plist"
-if [ -f "$PLIST" ]; then
+# 1.4 launchd plist installed and loaded — a personal install uses a per-user
+# LaunchAgent; a system-mode install (root daemon) uses a LaunchDaemon.
+AGENT_PLIST="$HOME/Library/LaunchAgents/com.ezblock.openscope.openscoped.plist"
+DAEMON_PLIST="/Library/LaunchDaemons/com.ezblock.openscope.openscoped.plist"
+if [ -f "$AGENT_PLIST" ]; then
   LC_STATUS=$(launchctl list 2>/dev/null | grep "com.ezblock.openscope.openscoped" 2>/dev/null || echo "(not listed by launchctl)")
-  record PASS "LaunchAgent plist" "installed"
-  print_status PASS "LaunchAgent plist" "$PLIST"
+  record PASS "launchd plist" "LaunchAgent installed"
+  print_status PASS "launchd plist" "$AGENT_PLIST"
   show_evidence "launchctl: $LC_STATUS"
+elif [ -f "$DAEMON_PLIST" ]; then
+  record PASS "launchd plist" "LaunchDaemon installed (system mode)"
+  print_status PASS "launchd plist" "$DAEMON_PLIST"
 else
-  record FAIL "LaunchAgent plist" "$PLIST not found"
-  print_status FAIL "LaunchAgent plist" "not found — reinstall?"
+  record FAIL "launchd plist" "neither $AGENT_PLIST nor $DAEMON_PLIST found"
+  print_status FAIL "launchd plist" "not found — reinstall?"
 fi
 
 printf '\n'
@@ -585,7 +593,11 @@ else
   HTTP_SOCKET=$(mktemp -u /tmp/openscope-http.XXXXXX.sock)
   HTTP_STDOUT=$(mktemp)
   HTTP_STDERR=$(mktemp)
-  OPENSCOPE_SOCKET="$HTTP_SOCKET" OPENSCOPE_HTTP_LISTEN="127.0.0.1:$HTTP_PORT" "$HTTP_BIN" >"$HTTP_STDOUT" 2>"$HTTP_STDERR" &
+  # ALLOW_ANON: this is a private, short-lived loopback bridge for the test
+  # run — anonymous transport keeps the suite's policy assertions meaningful
+  # (the daemon refuses anon on non-loopback regardless). The INSTALLED
+  # daemon's bearer-token requirement is untouched.
+  OPENSCOPE_SOCKET="$HTTP_SOCKET" OPENSCOPE_HTTP_LISTEN="127.0.0.1:$HTTP_PORT" OPENSCOPE_HTTP_ALLOW_ANON=1 "$HTTP_BIN" >"$HTTP_STDOUT" 2>"$HTTP_STDERR" &
   HTTP_PID=$!
 
   for _ in $(seq 1 20); do
